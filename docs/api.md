@@ -273,3 +273,36 @@ The engine checks deadlines on every request to a session route and on every pol
 and every 5 s in the background. An expired or failed point stays failed: a later upload for
 it is not stored. Once no point is pending, the session is analysed as usual, or fails
 `all_points_failed` when no point was uploaded.
+
+## CLI: `measure`
+
+`hifisync-acoustics measure` drives one manual session against a running engine:
+
+```
+hifisync-acoustics measure --url http://host:8765 --room living \
+    --assign POINT_ID=node-a [--assign POINT_ID=node-b ...] \
+    [--duration 6] [--repeats 1] [--start-window 10] [--play "afplay {file}"] [--yes]
+```
+
+The token (role `app` or `ha`) comes from the environment variable
+`HIFISYNC_ACOUSTICS_TOKEN` or from `--token-file PATH`. There is no option that takes the token
+as a value, so it stays out of the process list. The room, its points and the nodes must
+already exist.
+
+1. Prints "Set the volume on your player now; nothing here changes it." and waits for Enter
+   (`--yes` skips the wait).
+2. Creates the session and arms it.
+3. Polls the session every 0.5 s for at most 15 s until no command is `pending` or `taken`. It
+   goes on when at least one node is `recording` and prints a warning for each `failed` or
+   `expired` node, whose point fails. It exits 1 when no node is recording or a command is
+   still `pending` or `taken` after 15 s, and prints each node's state.
+4. Downloads `sweep.wav` to a temporary file. With `--play`, runs the command with `{file}`
+   replaced, as an argument list without a shell. Without it, prints the file path and the
+   start window.
+5. Polls until the session is `done` or `failed`, then prints one line per point: state,
+   failure, T30 at 500 Hz and 1 kHz and the strongest peak below 200 Hz. The temporary file
+   is removed.
+
+Exit codes: 0 when every point is `done`, 1 when a point or the session failed or a wait ran
+out, 2 for usage errors, a missing token, a connection error or an API rejection (for
+example `capture_too_long`).

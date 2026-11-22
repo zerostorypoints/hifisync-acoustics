@@ -104,6 +104,19 @@ def _cmd_token(args) -> int:
     return 1
 
 
+def _assign(value: str) -> tuple[str, str]:
+    point, sep, node = value.partition("=")
+    if not sep or not point or not node:
+        raise argparse.ArgumentTypeError("expected POINT=NODE")
+    return point, node
+
+
+def _cmd_measure(args) -> int:
+    from hifisync_acoustics.client import measure_main
+
+    return measure_main(args)
+
+
 def _parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(prog="hifisync-acoustics")
     sub = p.add_subparsers(dest="command", required=True)
@@ -126,6 +139,23 @@ def _parser() -> argparse.ArgumentParser:
     c = sub.add_parser("compare-rew", help="compare the engine with REW exports of one case")
     c.add_argument("case_dir")
     c.set_defaults(func=_cmd_compare)
+
+    m = sub.add_parser(
+        "measure", help="run one manual measurement session against a running engine",
+        allow_abbrev=False,
+        description="The token comes from $HIFISYNC_ACOUSTICS_TOKEN or --token-file.")
+    m.add_argument("--url", required=True, help="engine URL, for example http://host:8765")
+    m.add_argument("--room", required=True, help="room id")
+    m.add_argument("--assign", required=True, action="append", type=_assign,
+                   metavar="POINT=NODE", help="point id and node id; repeat for more points")
+    m.add_argument("--duration", type=float, default=6.0)
+    m.add_argument("--repeats", type=int, default=1)
+    m.add_argument("--start-window", type=float, default=10.0,
+                   help="seconds to start playback once the nodes record (0-30)")
+    m.add_argument("--play", help='player command, "{file}" is the sweep, e.g. "afplay {file}"')
+    m.add_argument("--token-file", help="file holding the token")
+    m.add_argument("--yes", action="store_true", help="do not wait for Enter")
+    m.set_defaults(func=_cmd_measure)
 
     data_help = f"data directory (default: ${DATA_ENV})"
     v = sub.add_parser("serve", help="run the HTTP API")
