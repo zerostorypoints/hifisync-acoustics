@@ -69,5 +69,4 @@ def test_inverse_flat_midband():
     f = np.fft.rfftfreq(n, 1 / 48000)
     band = (f >= 50) & (f <= 10000)
     db = 20 * np.log10(np.abs(np.fft.rfft(ir, n))[band])
-    print("midband ripple dB:", db.min(), db.max())
     assert np.max(np.abs(db)) < 0.5
