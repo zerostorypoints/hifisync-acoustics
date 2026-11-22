@@ -20,8 +20,8 @@ advertise when it listens on a loopback address or when started with `--no-zeroc
 Every route except `/health` needs `Authorization: Bearer <token>`.
 
 ```
-hifisync-acoustics token create NAME [--role app|ha]   # prints the token once
-hifisync-acoustics token list                          # name, role, created, revoked
+hifisync-acoustics token create NAME [--role app|ha|node] [--node NODE_ID]   # prints the token once
+hifisync-acoustics token list                          # name, role, created, revoked, node
 hifisync-acoustics token revoke NAME
 ```
 
@@ -30,6 +30,20 @@ hifisync-acoustics token revoke NAME
 - Role `ha` is for the Home Assistant integration. Once it has written a node, the room and
   name of that node belong to Home Assistant, and an `app` token that changes them gets 409
   `managed_by_ha`. Role `app` is for every other client.
+- Role `node` is for a measurement node and is bound to one node id: `token create NAME --role
+  node --node NODE_ID`. `--node` is required for role `node` and refused for the others.
+  A `node` token may call only:
+
+  | Allowed | Everything else |
+  | --- | --- |
+  | `GET /health` | 403 `forbidden` |
+  | `PUT /nodes/{own}`, only the fields `esphome_name`, `firmware` and `capture` (any other field answers 403 `forbidden`) | |
+  | `PUT /sessions/{id}/recordings/{own}` | |
+
+  `{own}` is the node id of the token; the same routes for another node answer 403
+  `forbidden`. A request with a `node` token on its own node sets the node's `last_seen_at`,
+  which `GET /nodes` returns. In `PUT /nodes/{id}`, `capture` also accepts a boolean, stored
+  as `"true"` or `"false"`.
 - A token in the query string is refused with 400 `token_in_url`, on every route, whatever
   the parameter is called. The check is by shape: a token-named parameter (`token`,
   `access_token` and the like) or any run of 43 URL-safe base64 characters in the query
@@ -48,6 +62,7 @@ hifisync-acoustics token revoke NAME
 | --- | --- |
 | 400 | `bad_request`, `token_in_url`, `unknown_room`; a recording error code for a calibration upload (`unsupported_format`, `rate_mismatch`, `too_short`, `bad_calibration`, `clipped`, `no_signal`) |
 | 401 | `unauthorized` |
+| 403 | `forbidden` (a `node` token on a route or node it may not use) |
 | 404 | `not_found` |
 | 409 | `managed_by_ha`, `session_not_accepting` |
 | 413 | `body_too_large` (bodies over 200 MB) |
@@ -86,7 +101,9 @@ Coordinates and room axes follow [coordinates.md](coordinates.md): `width_m` is 
 
 - `GET /nodes` lists the nodes.
 - `PUT /nodes/{id}` creates or updates a node. The fields are `esphome_name`, `firmware`,
-  `capture`, `install_room_id`, `install_x`, `install_y` and `install_z`. Only the fields in
+  `capture`, `install_room_id`, `install_x`, `install_y` and `install_z`. `GET /nodes` also
+  returns `last_seen_at`, the time of the last request made with the node's own token (`null`
+  if none). Only the fields in
   the body change, and `null` clears a field. A new node needs `esphome_name`. Other fields
   answer 400.
 - `GET /nodes/{id}/calibrations` lists the node's calibrations, oldest first: `version`,

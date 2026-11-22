@@ -83,7 +83,7 @@ def _cmd_token(args) -> int:
     store = Store.open(_data_dir(args))
     if args.token_command == "create":
         try:
-            token = auth.issue(store, args.name, role=args.role)
+            token = auth.issue(store, args.name, role=args.role, node_id=args.node)
         except ValueError as exc:
             print(f"error: {exc}", file=sys.stderr)
             return 1
@@ -92,9 +92,10 @@ def _cmd_token(args) -> int:
               file=sys.stderr)
         return 0
     if args.token_command == "list":
-        print("name role created revoked")
+        print("name role created revoked node")
         for t in store.list_tokens():
-            print(f"{t['name']} {t['role']} {t['created_at']} {t['revoked_at'] or '-'}")
+            print(f"{t['name']} {t['role']} {t['created_at']} {t['revoked_at'] or '-'} "
+                  f"{t['node_id'] or '-'}")
         return 0
     if auth.revoke(store, args.name):
         print(f"revoked {args.name!r}")
@@ -138,7 +139,8 @@ def _parser() -> argparse.ArgumentParser:
     tsub = t.add_subparsers(dest="token_command", required=True)
     tc = tsub.add_parser("create", help="create a token and print it once")
     tc.add_argument("name")
-    tc.add_argument("--role", choices=("app", "ha"), default="app")
+    tc.add_argument("--role", choices=("app", "ha", "node"), default="app")
+    tc.add_argument("--node", help="node id the token is bound to (required for --role node)")
     tl = tsub.add_parser("list", help="list token names, roles and dates")
     tr = tsub.add_parser("revoke", help="revoke the token with this name")
     tr.add_argument("name")

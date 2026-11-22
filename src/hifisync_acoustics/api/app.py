@@ -8,6 +8,7 @@ error messages carry no file system paths.
 from __future__ import annotations
 
 import dataclasses
+import functools
 import io
 import json
 import logging
@@ -71,7 +72,8 @@ _TOKEN_SCOPE_KEY = "hifisync.token"
 _TOKEN_SHAPE = re.compile(r"(?<![\w-])[A-Za-z0-9_-]{43}(?![\w-])")
 _NODE_FIELDS = {"esphome_name": str, "firmware": str, "capture": str, "install_room_id": str,
                 "install_x": float, "install_y": float, "install_z": float}
-_STATUS_CODES = {400: "bad_request", 401: "unauthorized", 404: "not_found",
+_NODE_SELF_FIELDS = {"esphome_name", "firmware", "capture"}
+_STATUS_CODES = {400: "bad_request", 401: "unauthorized", 403: "forbidden", 404: "not_found",
                  405: "method_not_allowed", 409: "conflict", 413: "body_too_large"}
 
 
@@ -79,6 +81,23 @@ class ApiError(Exception):
     def __init__(self, status: int, code: str, message: str) -> None:
         super().__init__(message)
         self.status, self.code, self.message = status, code, message
+
+
+def require_role(request: Request, *roles: str) -> None:
+    """Raise 403 ``forbidden`` unless the request's token has one of ``roles``."""
+    if request.scope[_TOKEN_SCOPE_KEY].role not in roles:
+        raise ApiError(403, "forbidden", "this token may not do that")
+
+
+def require_own_node(request: Request, node_id: str) -> None:
+    """For a ``node`` token, raise 403 ``forbidden`` unless ``node_id`` is its own node,
+    and record that the node was heard from. Other roles pass untouched."""
+    info = request.scope[_TOKEN_SCOPE_KEY]
+    if info.role != "node":
+        return
+    if info.node_id != node_id:
+        raise ApiError(403, "forbidden", "this token is bound to another node")
+    request.app.state.store.touch_node(node_id)
 
 
 def _error_response(status: int, code: str, message: str, headers: dict | None = None):
@@ -277,6 +296,14 @@ def create_app(store: Store, *, analyse_inline: bool = False,
     def role(request: Request) -> str:
         return request.scope[_TOKEN_SCOPE_KEY].role
 
+    def staff(handler):
+        """Routes are closed to ``node`` tokens unless registered without this wrapper."""
+        @functools.wraps(handler)
+        async def guarded(request: Request) -> Response:
+            require_role(request, "app", "ha")
+            return await handler(request)
+        return guarded
+
     def room_or_404(room_id: str) -> dict[str, Any]:
         room = store.get_room(room_id)
         if room is None:
@@ -351,15 +378,21 @@ def create_app(store: Store, *, analyse_inline: bool = False,
 
     async def put_node(request: Request) -> Response:
         node_id = _id(request.path_params["node_id"], "node")
+        require_own_node(request, node_id)
         body = await _json_object(request)
         unknown = set(body) - set(_NODE_FIELDS)
         if unknown:
             raise ApiError(400, "bad_request", f"unknown fields: {', '.join(sorted(unknown))}")
+        if role(request) == "node" and set(body) - _NODE_SELF_FIELDS:
+            raise ApiError(403, "forbidden", "a node token may set esphome_name, firmware "
+                           "and capture only")
         current = store.get_node(node_id) or {}
         fields = {k: current.get(k) for k in _NODE_FIELDS}
         for k, v in body.items():
             if v is None and k != "esphome_name":
                 fields[k] = None
+            elif k == "capture" and isinstance(v, bool):
+                fields[k] = "true" if v else "false"
             elif _NODE_FIELDS[k] is float:
                 fields[k] = _number(v, k)
             else:
@@ -370,9 +403,13 @@ def create_app(store: Store, *, analyse_inline: bool = False,
                 is None:
             raise ApiError(400, "unknown_room", "install_room_id names no room")
         try:
-            node = store.upsert_node(node_id, source=role(request), **fields)
+            node = store.upsert_node(node_id, source="ha" if role(request) == "ha" else "app",
+                                     **fields)
         except ManagedByHA as exc:
             raise ApiError(409, exc.code, str(exc)) from None
+        if role(request) == "node" and not current:
+            store.touch_node(node_id)
+            node = store.get_node(node_id) or node
         return JSONResponse(node)
 
     def node_or_404(node_id: str) -> dict[str, Any]:
@@ -469,6 +506,7 @@ def create_app(store: Store, *, analyse_inline: bool = False,
     async def put_recording(request: Request) -> Response:
         session_id = request.path_params["session_id"]
         node_id = request.path_params["node_id"]
+        require_own_node(request, node_id)
         session = session_or_404(session_id, False)
         if node_id not in {p["node_id"] for p in session["points"]}:
             raise ApiError(404, "not_found", "node is not part of this session")
@@ -529,22 +567,22 @@ def create_app(store: Store, *, analyse_inline: bool = False,
 
     routes = [
         Route(f"{API}/health", health),
-        Route(f"{API}/sweep.wav", sweep_wav),
-        Route(f"{API}/rooms", list_rooms),
-        Route(f"{API}/rooms/{{room_id}}", get_room, methods=["GET"]),
-        Route(f"{API}/rooms/{{room_id}}", put_room, methods=["PUT"]),
-        Route(f"{API}/rooms/{{room_id}}/points", list_points, methods=["GET"]),
-        Route(f"{API}/rooms/{{room_id}}/points", add_point, methods=["POST"]),
-        Route(f"{API}/nodes", list_nodes),
+        Route(f"{API}/sweep.wav", staff(sweep_wav)),
+        Route(f"{API}/rooms", staff(list_rooms)),
+        Route(f"{API}/rooms/{{room_id}}", staff(get_room), methods=["GET"]),
+        Route(f"{API}/rooms/{{room_id}}", staff(put_room), methods=["PUT"]),
+        Route(f"{API}/rooms/{{room_id}}/points", staff(list_points), methods=["GET"]),
+        Route(f"{API}/rooms/{{room_id}}/points", staff(add_point), methods=["POST"]),
+        Route(f"{API}/nodes", staff(list_nodes)),
         Route(f"{API}/nodes/{{node_id}}", put_node, methods=["PUT"]),
-        Route(f"{API}/nodes/{{node_id}}/calibrations", list_calibrations, methods=["GET"]),
-        Route(f"{API}/nodes/{{node_id}}/calibrations", add_calibration, methods=["POST"]),
-        Route(f"{API}/sessions", post_session, methods=["POST"]),
-        Route(f"{API}/sessions/{{session_id}}", get_session),
+        Route(f"{API}/nodes/{{node_id}}/calibrations", staff(list_calibrations), methods=["GET"]),
+        Route(f"{API}/nodes/{{node_id}}/calibrations", staff(add_calibration), methods=["POST"]),
+        Route(f"{API}/sessions", staff(post_session), methods=["POST"]),
+        Route(f"{API}/sessions/{{session_id}}", staff(get_session)),
         Route(f"{API}/sessions/{{session_id}}/recordings/{{node_id}}", put_recording,
               methods=["PUT"]),
-        Route(f"{API}/sessions/{{session_id}}/results", get_results),
-        Route(f"{API}/sessions/{{session_id}}/export", get_export),
+        Route(f"{API}/sessions/{{session_id}}/results", staff(get_results)),
+        Route(f"{API}/sessions/{{session_id}}/export", staff(get_export)),
     ]
     app = Starlette(
         routes=routes,

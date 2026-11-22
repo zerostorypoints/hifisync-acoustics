@@ -22,7 +22,8 @@ import numpy as np
 
 from hifisync_acoustics.analysis.calibration import CalibrationCurve
 
-_MIGRATIONS = ["schema.sql", "schema_v2.sql", "schema_v3.sql"]  # index i migrates user_version i to i + 1
+_MIGRATIONS = ["schema.sql", "schema_v2.sql", "schema_v3.sql",
+               "schema_v4.sql"]  # index i migrates user_version i to i + 1
 
 
 class ManagedByHA(ValueError):
@@ -179,6 +180,11 @@ class Store:
         with closing(self._connect()) as con:
             return [dict(r) for r in con.execute("SELECT * FROM nodes ORDER BY esphome_name, id")]
 
+    def touch_node(self, node_id: str) -> None:
+        """Record that the node was just heard from; does nothing for an unknown node."""
+        with self._write() as con:
+            con.execute("UPDATE nodes SET last_seen_at = ? WHERE id = ?", (_now(), node_id))
+
     # points --------------------------------------------------------------
 
     def add_point(self, room_id: str, label: str, x: float, y: float, z: float) -> str:
@@ -229,26 +235,28 @@ class Store:
 
     # tokens --------------------------------------------------------------
 
-    def add_token(self, name: str, digest: str, role: str) -> None:
+    def add_token(self, name: str, digest: str, role: str, node_id: str | None = None) -> None:
         """Store a token's digest; the name must not belong to another active token."""
         with self._write() as con:
             if con.execute("SELECT 1 FROM tokens WHERE name = ? AND revoked_at IS NULL",
                            (name,)).fetchone():
                 raise ValueError(f"an active token named {name!r} exists")
-            con.execute("INSERT INTO tokens (id, name, digest, created_at, role)"
-                        " VALUES (?, ?, ?, ?, ?)", (_uuid(), name, digest, _now(), role))
+            con.execute("INSERT INTO tokens (id, name, digest, created_at, role, node_id)"
+                        " VALUES (?, ?, ?, ?, ?, ?)",
+                        (_uuid(), name, digest, _now(), role, node_id))
 
     def active_tokens(self) -> list[dict[str, Any]]:
-        """Name, role and digest of every token that is not revoked."""
+        """Name, role, node id and digest of every token that is not revoked."""
         with closing(self._connect()) as con:
             return [dict(r) for r in con.execute(
-                "SELECT name, role, digest FROM tokens WHERE revoked_at IS NULL")]
+                "SELECT name, role, node_id, digest FROM tokens WHERE revoked_at IS NULL")]
 
     def list_tokens(self) -> list[dict[str, Any]]:
-        """Name, role, created and revoked time of every token; never the digest."""
+        """Name, role, node id, created and revoked time of every token; never the digest."""
         with closing(self._connect()) as con:
             return [dict(r) for r in con.execute(
-                "SELECT name, role, created_at, revoked_at FROM tokens ORDER BY created_at")]
+                "SELECT name, role, node_id, created_at, revoked_at FROM tokens"
+                " ORDER BY created_at")]
 
     def revoke_token(self, name: str) -> int:
         with self._write() as con:

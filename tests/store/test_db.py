@@ -34,10 +34,10 @@ def test_open_creates_layout(tmp_path):
             "session_points", "tokens"} <= tables
 
 
-def test_migration_from_empty_sets_user_version_3(tmp_path):
+def test_migration_from_empty_sets_user_version_4(tmp_path):
     Store.open(tmp_path)
     con = sqlite3.connect(tmp_path / "engine.sqlite3")
-    assert con.execute("PRAGMA user_version").fetchone()[0] == 3
+    assert con.execute("PRAGMA user_version").fetchone()[0] == 4
 
 
 def test_calibration_versions_increment_per_node(tmp_path):
@@ -165,7 +165,7 @@ def test_migrates_v1_database_with_data(tmp_path):
 
     s = Store.open(tmp_path)
     con = sqlite3.connect(tmp_path / "engine.sqlite3")
-    assert con.execute("PRAGMA user_version").fetchone()[0] == 3
+    assert con.execute("PRAGMA user_version").fetchone()[0] == 4
     cols = {t: {r[1] for r in con.execute(f"PRAGMA table_info({t})")}
             for t in ("session_points", "sessions", "tokens")}
     assert "failure_detail" in cols["session_points"]
@@ -177,3 +177,25 @@ def test_migrates_v1_database_with_data(tmp_path):
     sess = s.get_session("s1")
     assert sess["state"] == "done" and sess["analysis_claimed"] == 0
     assert sess["points"][0]["failure_detail"] is None
+
+
+def test_v4_adds_node_columns(tmp_path):
+    from hifisync_acoustics.store.db import _MIGRATIONS, _migration_sql, _split_statements
+
+    con = sqlite3.connect(tmp_path / "engine.sqlite3")
+    for name in _MIGRATIONS[:3]:
+        for stmt in _split_statements(_migration_sql(name)):
+            con.execute(stmt)
+    con.execute("PRAGMA user_version = 3")
+    con.execute("INSERT INTO tokens (id, name, digest, created_at, role)"
+                " VALUES ('t1', 'old', 'abc', 't', 'ha')")
+    con.commit()
+    con.close()
+
+    Store.open(tmp_path)
+    con = sqlite3.connect(tmp_path / "engine.sqlite3")
+    assert con.execute("PRAGMA user_version").fetchone()[0] == 4
+    assert "node_id" in {r[1] for r in con.execute("PRAGMA table_info(tokens)")}
+    assert "last_seen_at" in {r[1] for r in con.execute("PRAGMA table_info(nodes)")}
+    assert con.execute("SELECT name, role, node_id FROM tokens").fetchall() == [
+        ("old", "ha", None)]
