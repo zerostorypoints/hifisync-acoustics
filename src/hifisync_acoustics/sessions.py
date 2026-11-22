@@ -158,7 +158,7 @@ def _analyse_points(store: Store, session: dict) -> None:
             else:
                 store.set_point_result(session_id, point["point_id"], state="failed",
                                        failure=result.preflight.code, result=result.to_json(),
-                                       detail=f"preflight: {result.preflight.code}")
+                                       detail=result.failure_detail)
         except RecordingError as exc:
             store.set_point_result(session_id, point["point_id"], state="failed",
                                    failure=exc.code, result=None,

@@ -358,3 +358,24 @@ def test_old_sweep_json_defaults_both(env, tmp_path):
     pts = _points(store, sid)
     assert pts["n1"]["state"] == "done" and pts["n1"]["failure"] is None
     assert pts["n1"]["result"]["preflight"]["ok"] is True
+
+
+def test_silent_right_speaker_detail_names_it(env, tmp_path):
+    from hifisync_acoustics.analysis.sweep import render_sequence
+
+    store, room, p1, _ = env
+    spec = SweepSpec(duration_s=2.0, sources=("left", "right"))
+    sid = create_session(store, room["id"], [(p1, "n1")], spec, "amp->spk")
+    ir = np.zeros(2400)
+    ir[480] = 0.5
+    wet = scipy.signal.fftconvolve(render_sequence(spec)[:, 0], ir)  # right disconnected
+    rng = np.random.default_rng(0)
+    x = 1e-4 * rng.standard_normal(int(0.6 * 48000) + len(wet) + 3 * 48000)
+    x[int(0.6 * 48000) : int(0.6 * 48000) + len(wet)] += wet
+    path = tmp_path / "left-only.wav"
+    wavfile.write(path, 48000, x.astype(np.float32))
+    add_recording(store, sid, "n1", path)
+    analyse_session(store, sid)
+    pt = _points(store, sid)["n1"]
+    assert pt["state"] == "failed" and pt["failure"] == "no_signal"
+    assert pt["failure_detail"] == "preflight: no_signal (source right, channel 0)"

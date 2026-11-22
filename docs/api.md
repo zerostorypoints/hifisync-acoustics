@@ -210,6 +210,35 @@ reaches `recording` with its first upload or when it is armed.
   rise over the first 25 ms. For sweeps of 6 s or longer, a system with a flat response
   reads flat within ±0.5 dB from 30 Hz to 10 kHz at 1/6-octave smoothing; shorter sweeps
   deviate more below about 40 Hz.
+
+  Sweep k of the file belongs to source `sources[k // repeats]`, and each source's
+  impulse response is the average of its own repeats. `fr`, `decay`, `peaks`,
+  `schroeder_hz` and `preflight` are those of the first source, so a `["both"]` session
+  reads as before. More fields:
+
+  - `sources`: `{name: {fr, decay, peaks, direct_ms, reflections}}`, one entry per source.
+    `fr`, `decay` and `peaks` have the form of the top-level fields. `direct_ms` is the
+    arrival of the source's direct sound after the earliest source's at this point (0 for
+    the earliest, and for a single source). `reflections` lists at most 10 peaks of the
+    energy-time curve 0.5–30 ms after the direct peak and at least 6 dB above the local
+    floor, strongest first, each `{"delay_ms", "level_db", "path_diff_m"}`. `level_db` is
+    relative to the direct sound; `path_diff_m` uses 343 m/s.
+  - `stereo`, only when both `left` and `right` were measured:
+    - `arrival_diff_ms`: left direct sound minus right, from the same recording channel.
+      Positive means the left loudspeaker arrives later.
+    - `level_diff_direct_db` and `level_diff_steady_db`: left minus right in dB, each
+      `{"third_octave": {"100": …, …, "10000": …}, "octave": {"125": …, …, "8000": …}}`.
+      The direct window is the first 5 ms after each direct peak (a half-Hann fall from the
+      peak, with a 0.5 ms half-Hann rise before it); the steady window is the whole response.
+
+  With several sources, pre-flight runs on channel 0 for each source's part of the
+  recording, after the recording's own lead-in. The first failing source fails the point
+  with the usual code, its `failure_detail` names the source and channel, for example
+  `preflight: no_signal (source right, channel 0)`, and `preflight` is that source's check.
+  When a source is silent and the order of the sweeps found cannot tell which one it is
+  (for example a silent first source with room left after the last sweep), the point fails
+  `no_signal` with a detail saying so; it is never reported as the other source. A
+  recording that ends before the last source's sweep fails `too_short`.
 - `GET /sessions/{id}/export` returns a ZIP with `session.json`, `recordings/<node>.wav` and
   `results/<point>.json`.
 
