@@ -16,6 +16,12 @@ INSERT INTO tokens_v4 (id, name, digest, created_at, revoked_at, role)
 DROP TABLE tokens;
 ALTER TABLE tokens_v4 RENAME TO tokens;
 ALTER TABLE nodes ADD COLUMN last_seen_at TEXT;
+-- nodes.capture becomes a boolean, stored as 'true' or 'false'. An earlier free-text value
+-- named the capture hardware, so a node that had one can capture.
+UPDATE nodes SET capture = CASE
+    WHEN capture IS NULL OR trim(capture) = '' THEN NULL
+    WHEN lower(capture) = 'false' THEN 'false'
+    ELSE 'true' END;
 
 -- Commands a node long-polls for. One 'record' command per (session, node) when the session
 -- is armed. States: pending -> taken -> recording -> done, or failed (the node said so) or

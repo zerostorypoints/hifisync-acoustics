@@ -44,8 +44,7 @@ hifisync-acoustics token revoke NAME
 
   `{own}` is the node id of the token; the same routes for another node answer 403
   `forbidden`. A request with a `node` token on its own node sets the node's `last_seen_at`,
-  which `GET /nodes` returns. In `PUT /nodes/{id}`, `capture` also accepts a boolean, stored
-  as `"true"` or `"false"`.
+  which `GET /nodes` returns.
 - A token in the query string is refused with 400 `token_in_url`, on every route, whatever
   the parameter is called. The check is by shape: a token-named parameter (`token`,
   `access_token` and the like) or any run of 43 URL-safe base64 characters in the query
@@ -115,9 +114,9 @@ Coordinates and room axes follow [coordinates.md](coordinates.md): `width_m` is 
 - `PUT /nodes/{id}` creates or updates a node. The fields are `esphome_name`, `firmware`,
   `capture`, `install_room_id`, `install_x`, `install_y` and `install_z`. `GET /nodes` also
   returns `last_seen_at`, the time of the last request made with the node's own token (`null`
-  if none). Only the fields in
-  the body change, and `null` clears a field. A new node needs `esphome_name`. Other fields
-  answer 400.
+  if none). `capture` is a JSON boolean, whether the node can record for a session; another
+  type answers 400. Only the fields in the body change, and `null` clears a field. A new node
+  needs `esphome_name`. Other fields answer 400.
 - `GET /nodes/{id}/calibrations` lists the node's calibrations, oldest first: `version`,
   `created_at`, `reference_id`, `reference_cal_name`, `offset_db`, `conditions` and `curve`
   (`freqs_hz`, `correction_db`, `sensitivity_db`).

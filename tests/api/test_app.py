@@ -198,11 +198,15 @@ async def test_put_node_merges_fields(client, app_token):
     r = await client.put("/api/v1/nodes/n1", json={"firmware": "1.0"}, headers=h)
     assert r.status_code == 400  # a new node needs esphome_name
     r = await client.put("/api/v1/nodes/n1", json={"esphome_name": "mic-a", "firmware": "1.0",
-                                                  "capture": "i2s"}, headers=h)
+                                                  "capture": True}, headers=h)
     assert r.status_code == 200
     r = await client.put("/api/v1/nodes/n1", json={"firmware": "2.0"}, headers=h)
     n = r.json()
-    assert (n["esphome_name"], n["firmware"], n["capture"]) == ("mic-a", "2.0", "i2s")
+    assert (n["esphome_name"], n["firmware"], n["capture"]) == ("mic-a", "2.0", True)
+    r = await client.put("/api/v1/nodes/n1", json={"capture": "false"}, headers=h)
+    assert r.status_code == 400  # a boolean, not a string
+    r = await client.put("/api/v1/nodes/n1", json={"capture": False}, headers=h)
+    assert r.json()["capture"] is False
     assert n["install_source"] == "app"
     r = await client.put("/api/v1/nodes/n1", json={"colour": "red"}, headers=h)
     assert r.status_code == 400
@@ -210,6 +214,7 @@ async def test_put_node_merges_fields(client, app_token):
     assert r.status_code == 400
     nodes = (await client.get("/api/v1/nodes", headers=h)).json()
     assert [x["id"] for x in nodes] == ["n1"]
+    assert nodes[0]["capture"] is False
 
 
 async def test_ha_token_owns_node_room_and_name(client, app_token, ha_token):

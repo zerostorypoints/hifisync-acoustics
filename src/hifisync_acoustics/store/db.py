@@ -165,12 +165,13 @@ class Store:
     # nodes ---------------------------------------------------------------
 
     def upsert_node(self, node_id: str, *, esphome_name: str, firmware: str | None = None,
-                    capture: str | None = None, install_room_id: str | None = None,
+                    capture: bool | None = None, install_room_id: str | None = None,
                     install_x: float | None = None, install_y: float | None = None,
                     install_z: float | None = None, source: str = "app") -> dict[str, Any]:
         """Home Assistant owns a node's room and name once it has installed it: an
         ``app`` write that changes ``install_room_id`` or ``esphome_name`` of an
-        ``ha`` node raises :class:`ManagedByHA`. A ``ha`` write sets anything."""
+        ``ha`` node raises :class:`ManagedByHA`. A ``ha`` write sets anything. ``capture`` is
+        stored as ``'true'`` or ``'false'`` and read back as a boolean."""
         if source not in ("ha", "app"):
             raise ValueError(f"unknown source {source!r}")
         with self._write() as con:
@@ -191,18 +192,19 @@ class Store:
                 " install_room_id=excluded.install_room_id, install_x=excluded.install_x,"
                 " install_y=excluded.install_y, install_z=excluded.install_z,"
                 " install_source=excluded.install_source, updated_at=excluded.updated_at",
-                (node_id, esphome_name, firmware, capture, install_room_id, install_x,
-                 install_y, install_z, install_source, _now()))
-            return dict(con.execute("SELECT * FROM nodes WHERE id = ?", (node_id,)).fetchone())
+                (node_id, esphome_name, firmware,
+                 None if capture is None else ("true" if capture else "false"),
+                 install_room_id, install_x, install_y, install_z, install_source, _now()))
+            return _node(con.execute("SELECT * FROM nodes WHERE id = ?", (node_id,)).fetchone())
 
     def get_node(self, node_id: str) -> dict[str, Any] | None:
         with closing(self._connect()) as con:
             row = con.execute("SELECT * FROM nodes WHERE id = ?", (node_id,)).fetchone()
-        return None if row is None else dict(row)
+        return None if row is None else _node(row)
 
     def list_nodes(self) -> list[dict[str, Any]]:
         with closing(self._connect()) as con:
-            return [dict(r) for r in con.execute("SELECT * FROM nodes ORDER BY esphome_name, id")]
+            return [_node(r) for r in con.execute("SELECT * FROM nodes ORDER BY esphome_name, id")]
 
     def touch_node(self, node_id: str) -> None:
         """Record that the node was just heard from; does nothing for an unknown node."""
@@ -552,6 +554,12 @@ def _fail_open_point(con: sqlite3.Connection, session_id: str, node_id: str, fai
 def _command(row: sqlite3.Row) -> dict[str, Any]:
     d = dict(row)
     d["payload"] = json.loads(d.pop("payload_json"))
+    return d
+
+
+def _node(row: sqlite3.Row) -> dict[str, Any]:
+    d = dict(row)
+    d["capture"] = None if d["capture"] is None else d["capture"] == "true"
     return d
 
 

@@ -80,7 +80,7 @@ _TOKEN_PARAMS = {"token", "access_token", "bearer", "authorization", "auth", "ap
 _TOKEN_SCOPE_KEY = "hifisync.token"
 # The shape of ``secrets.token_urlsafe(32)``: 43 characters of the URL-safe alphabet.
 _TOKEN_SHAPE = re.compile(r"(?<![\w-])[A-Za-z0-9_-]{43}(?![\w-])")
-_NODE_FIELDS = {"esphome_name": str, "firmware": str, "capture": str, "install_room_id": str,
+_NODE_FIELDS = {"esphome_name": str, "firmware": str, "capture": bool, "install_room_id": str,
                 "install_x": float, "install_y": float, "install_z": float}
 _NODE_SELF_FIELDS = {"esphome_name", "firmware", "capture"}
 _STATUS_CODES = {400: "bad_request", 401: "unauthorized", 403: "forbidden", 404: "not_found",
@@ -442,8 +442,10 @@ def create_app(store: Store, *, analyse_inline: bool = False,
         for k, v in body.items():
             if v is None and k != "esphome_name":
                 fields[k] = None
-            elif k == "capture" and isinstance(v, bool):
-                fields[k] = "true" if v else "false"
+            elif k == "capture":
+                if not isinstance(v, bool):
+                    raise ApiError(400, "bad_request", "capture must be true, false or null")
+                fields[k] = v
             elif _NODE_FIELDS[k] is float:
                 fields[k] = _number(v, k)
             else:
