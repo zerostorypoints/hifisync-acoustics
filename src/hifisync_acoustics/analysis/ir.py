@@ -48,6 +48,9 @@ class ImpulseResponse:
     # Time of the direct peak in the recording, less the start of its sweep in the
     # sequence, averaged over the repeats: comparable between sources of one recording.
     arrival_s: float | None = None
+    # Node clock against the player's in ppm (positive: the node samples faster), fitted
+    # from the source repeats; None when no source has two repeats to fit it from.
+    clock_ppm: float | None = None
 
 
 def _taper_lead_in(x: np.ndarray, fs: int, lead: int) -> np.ndarray:
@@ -155,7 +158,8 @@ def _channel(rec: Recording, channel: int) -> np.ndarray:
 class _Lattice:
     y: np.ndarray  # recording deconvolved with the sweep's inverse
     slots: list[int]  # expected peak of every sweep of the file, in file order
-    period: int  # samples from one sweep's start to the next one's
+    period: int  # samples from one sweep's start to the next one's, as played
+    present: list[bool]  # whether each slot holds a sweep
 
 
 def _locate(x: np.ndarray, sweep: Sweep, spec: SweepSpec) -> _Lattice:
@@ -190,23 +194,24 @@ def _locate(x: np.ndarray, sweep: Sweep, spec: SweepSpec) -> _Lattice:
         if first < 0:
             continue
         slots = [first + k * period for k in range(count)]
-        cands.append((sum(holds_sweep(s) for s in slots), slots))
+        present = [holds_sweep(s) for s in slots]
+        cands.append((sum(present), slots, present))
     found = max(c[0] for c in cands)
-    best = [slots for c, slots in cands if c == found]
+    best = [(slots, present) for c, slots, present in cands if c == found]
     if len(best) > 1:
-        best = [slots for slots in best if slots[0] >= n - 1]
+        best = [(slots, present) for slots, present in best if slots[0] >= n - 1]
     if len(best) != 1:
         raise RecordingError(
             "no_signal",
             f"found {found} of {count} sweeps; their order in the recording cannot tell "
             f"which source is missing",
         )
-    slots = best[0]
+    slots, present = best[0]
     if slots[-1] + search >= len(x):
         last = spec.sources[-1]
         raise RecordingError(
             "too_short", f"recording ends before the last sweep of source {last}")
-    return _Lattice(y=y, slots=slots, period=period)
+    return _Lattice(y=y, slots=slots, period=period, present=present)
 
 
 def _blocks(spec: SweepSpec, slots: list[int]) -> dict[str, list[int]]:
@@ -234,22 +239,73 @@ def ir_per_source(
 
     fs = spec.sample_rate
     lat = _locate(x, sweep, spec)
+    fit = _fit_sources(lat, spec)
+    half = int(REFINE_S * fs)
+    cap = int(round(spec.gap_s * fs))
+    mag = np.abs(lat.y)
+    out = {}
+    for src, ks in _blocks(spec, list(range(spec.sweep_count))).items():
+        peaks = [_refine(mag, int(round(fit.offset[src] + k * fit.period)), half) for k in ks]
+        arrival = float(np.mean([p - k * fit.period for k, p in zip(ks, peaks)])) / fs
+        ir = _average(lat.y, peaks, len(x), cap, fs, arrival)
+        out[src] = dataclasses.replace(ir, clock_ppm=fit.clock_ppm)
+    return out
+
+
+@dataclass(frozen=True)
+class _SourceFit:
+    period: float  # samples between sweeps as recorded
+    offset: dict[str, float]  # each source's direct peak for lattice index 0
+    clock_ppm: float | None
+
+
+def _fit_sources(lat: _Lattice, spec: SweepSpec) -> _SourceFit:
+    """Where each source's sweeps peak, at the recorder's clock.
+
+    Each sweep's direct peak is first taken as the largest |y| within SOURCE_SEARCH_S of its
+    nominal slot. Player and recorder clocks differ, so the recorded period is not the
+    nominal one, and the error grows with the time between blocks. Within one source the
+    true spacing is the period, so when a source has two or more repeats, all of them
+    present, the peak positions of every such source are fitted by least squares as
+    ``offset[source] + k * period`` (one shared period, one offset per source). Sources
+    without such repeats get the offset of their peaks against the fitted period. Without
+    any source to fit, the nominal period is kept and ``clock_ppm`` is None; each source's
+    offset is then the strongest point of its repeats summed.
+    """
+    fs = spec.sample_rate
     mag = np.abs(lat.y)
     search = int(SOURCE_SEARCH_S * fs)
     padded = np.pad(mag, search)  # padded[s + search] is mag[s]
-    half = int(REFINE_S * fs)
-    cap = int(round(spec.gap_s * fs))
-    out = {}
-    for i, (src, slots) in enumerate(_blocks(spec, lat.slots).items()):
-        # The source's offset from its slots: strongest point of its repeats summed.
-        acc = sum(padded[s : s + 2 * search + 1] for s in slots)
-        offset = int(np.argmax(acc)) - search
-        peaks = [_refine(mag, s + offset, half) for s in slots]
-        first_k = i * spec.repeats
-        arrival = float(np.mean([p - (first_k + k) * lat.period
-                                 for k, p in enumerate(peaks)])) / fs
-        out[src] = _average(lat.y, peaks, len(x), cap, fs, arrival)
-    return out
+    blocks = _blocks(spec, list(range(spec.sweep_count)))
+
+    def strongest(k: int) -> int:
+        s = lat.slots[k]
+        return s - search + int(np.argmax(padded[s : s + 2 * search + 1]))
+
+    fitted = [src for src, ks in blocks.items()
+              if len(ks) >= 2 and all(lat.present[k] for k in ks)]
+    if not fitted:
+        offset = {}
+        for src, ks in blocks.items():
+            acc = sum(padded[lat.slots[k] : lat.slots[k] + 2 * search + 1] for k in ks)
+            offset[src] = float(lat.slots[ks[0]] - search + int(np.argmax(acc))
+                                - ks[0] * lat.period)
+        return _SourceFit(period=float(lat.period), offset=offset, clock_ppm=None)
+
+    rows, times = [], []
+    for j, src in enumerate(fitted):
+        for k in blocks[src]:
+            row = np.zeros(1 + len(fitted))
+            row[0], row[1 + j] = k, 1.0
+            rows.append(row)
+            times.append(strongest(k))
+    coef = np.linalg.lstsq(np.array(rows), np.array(times, dtype=float), rcond=None)[0]
+    period = float(coef[0])
+    offset = {src: float(coef[1 + j]) for j, src in enumerate(fitted)}
+    for src, ks in blocks.items():
+        if src not in offset:
+            offset[src] = float(np.mean([strongest(k) - k * period for k in ks]))
+    return _SourceFit(period=period, offset=offset, clock_ppm=(period / lat.period - 1) * 1e6)
 
 
 def source_recordings(
@@ -268,13 +324,16 @@ def source_recordings(
         return {spec.sources[0]: dataclasses.replace(rec, samples=x)}
     _check(len(x), rec.sample_rate, spec)
     lat = _locate(x, sweep, spec)
+    fit = _fit_sources(lat, spec)
+    slots_fit = [int(round(fit.offset[spec.sources[k // spec.repeats]] + k * fit.period))
+                 for k in range(spec.sweep_count)]
     fs = spec.sample_rate
     n = len(sweep.inverse)
     margin = int(SOURCE_SEARCH_S * fs)
     gap = int(round(spec.gap_s * fs))
-    lead_end = min(max(lat.slots[0] - (n - 1) - margin, 0), len(x))
+    lead_end = min(max(slots_fit[0] - (n - 1) - margin, 0), len(x))
     lead = x[:lead_end]
-    blocks = list(_blocks(spec, lat.slots).items())
+    blocks = list(_blocks(spec, slots_fit).items())
     out = {}
     for i, (src, slots) in enumerate(blocks):
         start = min(max(slots[0] - (n - 1) - margin, lead_end), len(x))

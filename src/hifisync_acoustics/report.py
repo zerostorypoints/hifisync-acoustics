@@ -90,6 +90,8 @@ class PointResult:
                 "arrival_diff_ms": self.stereo.arrival_diff_ms,
                 "level_diff_direct_db": _bands_json(self.stereo.level_diff_direct_db),
                 "level_diff_steady_db": _bands_json(self.stereo.level_diff_steady_db),
+                "clock_ppm": self.stereo.clock_ppm,
+                "drift_corrected": self.stereo.drift_corrected,
             }
         return _clean(out)
 
@@ -148,7 +150,12 @@ def _preflight_sources(rec: Recording, sweep: Sweep) -> tuple[dict[str, Prefligh
     spec = sweep.spec
     if len(spec.sources) == 1:
         pre = preflight(rec, sweep)
-        return {spec.sources[0]: pre}, None if pre.ok else f"preflight: {pre.code}"
+        name = spec.sources[0]
+        if pre.ok:
+            return {name: pre}, None
+        # A ("both",) session keeps its detail as before sources existed.
+        where = "" if name == "both" else f" (source {name}, channel 0)"
+        return {name: pre}, f"preflight: {pre.code}{where}"
     try:
         blocks = source_recordings(rec, sweep, spec, channel=0)
     except RecordingError as exc:

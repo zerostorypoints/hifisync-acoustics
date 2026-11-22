@@ -226,6 +226,18 @@ reaches `recording` with its first upload or when it is armed.
   - `stereo`, only when both `left` and `right` were measured:
     - `arrival_diff_ms`: left direct sound minus right, from the same recording channel.
       Positive means the left loudspeaker arrives later.
+    - `clock_ppm` and `drift_corrected`: the player and the node run on separate clocks, so
+      a recorded block lands slightly early or late against its place in the file. When a
+      source has 2 or more repeats, the engine fits the recorded sweep period from each
+      source's own repeats (least squares, one period, one offset per source). It then
+      places and averages the repeats with that period and corrects `arrival_diff_ms`.
+      `clock_ppm` is the node's clock against the player's, positive when the node runs
+      fast, and `drift_corrected` is `true`. With one repeat per source there is nothing
+      to fit: `clock_ppm` is `null`, `drift_corrected` is `false`, and `arrival_diff_ms`
+      is uncertain by about ±ε × the time between the left and right blocks, where ε is
+      the clock error. At the defaults (6 s sweep, 2 s gap, one repeat) the blocks are
+      8 s apart, so a 50 ppm clock error moves `arrival_diff_ms` by 0.4 ms. Use
+      `repeats` ≥ 2 when the arrival difference matters.
     - `level_diff_direct_db` and `level_diff_steady_db`: left minus right in dB, each
       `{"third_octave": {"100": …, …, "10000": …}, "octave": {"125": …, …, "8000": …}}`.
       The direct window is the first 5 ms after each direct peak (a half-Hann fall from the

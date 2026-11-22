@@ -174,3 +174,29 @@ def test_single_source_matches_impulse_response():
 def test_channel_other_than_loaded_is_rejected(irs):
     with pytest.raises(ValueError):
         ir_per_source(_rec(np.zeros(20 * FS)), generate_sweep(SPEC), SPEC, channel=1)
+
+
+def _resampled(x, ppm):
+    """``x`` as a node whose clock runs ``ppm`` fast against the player's would record it."""
+    from fractions import Fraction
+
+    r = Fraction(10**6 + ppm, 10**6)
+    return scipy.signal.resample_poly(x, r.numerator, r.denominator)
+
+
+@pytest.mark.parametrize("ppm", [-100, -50, 50, 100])
+def test_clock_drift_is_fitted(ppm):
+    spec = SweepSpec(duration_s=3.0, repeats=3, sources=("left", "right"))
+    x = _resampled(stereo_recording(spec), ppm)
+    irs = ir_per_source(_rec(x), generate_sweep(spec), spec)
+    rep = stereo_report(irs)
+    assert rep.drift_corrected is True
+    assert abs(rep.clock_ppm - ppm) <= 5, rep.clock_ppm
+    assert abs(rep.arrival_diff_ms - 0.5) <= 0.05, rep.arrival_diff_ms
+    assert len(early_reflections(irs["left"], FS)) == 1, early_reflections(irs["left"], FS)
+    assert early_reflections(irs["right"], FS) == []
+
+
+def test_one_repeat_is_not_drift_corrected(irs):
+    rep = stereo_report(irs)
+    assert rep.drift_corrected is False and rep.clock_ppm is None

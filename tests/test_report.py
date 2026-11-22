@@ -101,7 +101,9 @@ def test_stereo_point_reports_each_source():
     assert abs(j["sources"]["left"]["direct_ms"] - 0.5) <= 0.05
     assert j["sources"]["right"]["direct_ms"] == 0.0
     stereo = j["stereo"]
-    assert set(stereo) == {"arrival_diff_ms", "level_diff_direct_db", "level_diff_steady_db"}
+    assert set(stereo) == {"arrival_diff_ms", "level_diff_direct_db", "level_diff_steady_db",
+                           "clock_ppm", "drift_corrected"}
+    assert stereo["drift_corrected"] is False and stereo["clock_ppm"] is None
     assert abs(stereo["arrival_diff_ms"] - 0.5) <= 0.05
     assert set(stereo["level_diff_direct_db"]) == {"third_octave", "octave"}
     assert "4000" in stereo["level_diff_direct_db"]["octave"]
@@ -150,3 +152,10 @@ def test_mono_preflight_detail_unchanged():
     rec = _rec(np.zeros_like(rec.samples))
     res = analyse_recording(rec, sweep, DIMS, None)
     assert res.failure_detail == "preflight: no_signal"
+
+
+def test_single_named_source_detail_names_it():
+    spec = SweepSpec(duration_s=3.0, sources=("left",))
+    rec = _rec(1e-5 * np.random.default_rng(1).standard_normal(12 * FS))
+    res = analyse_recording(rec, generate_sweep(spec), DIMS, None)
+    assert res.failure_detail == "preflight: no_signal (source left, channel 0)"

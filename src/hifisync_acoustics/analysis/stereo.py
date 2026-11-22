@@ -4,7 +4,9 @@ left and right loudspeakers, and each loudspeaker's early reflections.
 All differences are left minus right, from impulse responses of one recording channel
 (``ir_per_source``).
 
-- Arrival: difference of the direct-peak arrival times (``ImpulseResponse.arrival_s``).
+- Arrival: difference of the direct-peak arrival times (``ImpulseResponse.arrival_s``),
+  corrected for the clock difference between player and node when the sources have
+  repeats to fit it from (``ImpulseResponse.clock_ppm``; ``drift_corrected``).
 - Level, per 1/3-octave band 100 Hz-10 kHz (base-10 centres, edges at 10**(+-1/20)) and per
   octave 125 Hz-8 kHz (base-2 centres, edges at 2**(+-1/2)): the mean power in the band, in
   two windows.
@@ -60,6 +62,8 @@ class StereoReport:
     arrival_diff_ms: float
     level_diff_direct_db: dict[str, dict[int, float]]
     level_diff_steady_db: dict[str, dict[int, float]]
+    clock_ppm: float | None  # node clock against the player's, fitted from the repeats
+    drift_corrected: bool  # False with one repeat per source: no clock fit
 
 
 def arrival_diff_ms(left: ImpulseResponse, right: ImpulseResponse) -> float:
@@ -130,6 +134,8 @@ def stereo_report(irs: dict[str, ImpulseResponse]) -> StereoReport | None:
         arrival_diff_ms=arrival_diff_ms(left, right),
         level_diff_direct_db=level_diff(left, right, "direct"),
         level_diff_steady_db=level_diff(left, right, "steady"),
+        clock_ppm=left.clock_ppm,
+        drift_corrected=left.clock_ppm is not None,
     )
 
 
