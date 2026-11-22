@@ -34,7 +34,9 @@ the flow and the exit codes.
 
 `esphome/components/acoustics_capture` is an ESPHome component that makes an ESP32 with
 PSRAM and a microphone a measurement node: it polls the engine for a record command, records
-and uploads the WAV. `docs/node-firmware.md` describes the YAML and the setup;
+and uploads the WAV. `docs/node-firmware.md` describes the YAML and the setup, with a
+[first-time setup walkthrough](docs/node-firmware.md#first-time-setup) from an empty engine
+to a first measurement;
 `esphome/examples/capture-node.yaml` is a complete example for an ESP32-S3 with an IM73D122
 PDM microphone.
 

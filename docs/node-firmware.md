@@ -10,6 +10,35 @@ IM73D122 PDM microphone, clock on GPIO4, data on GPIO5, right channel.
 [`esphome/examples/capture-node.yaml`](../esphome/examples/capture-node.yaml) is a complete
 configuration for it. The firmware is built and tested with ESPHome 2026.9.1.
 
+## First-time setup
+
+From an empty engine to a first measurement with one node. The names are examples: data in
+`./data`, the engine at `192.0.2.10`, a room `living` and a node `node-a`. Steps 1, 2 and 5 run
+on the engine host; the curl and `measure` steps need the app token of step 2 in
+`HIFISYNC_ACOUSTICS_TOKEN`.
+
+1. Start the engine:
+   `hifisync-acoustics serve --data ./data`
+2. Create an app token (printed once):
+   `export HIFISYNC_ACOUSTICS_TOKEN=$(hifisync-acoustics token create phone --data ./data)`
+3. Create the room:
+   `curl -X PUT http://192.0.2.10:8765/api/v1/rooms/living -H "Authorization: Bearer $HIFISYNC_ACOUSTICS_TOKEN" -H "Content-Type: application/json" -d '{"name": "Living room", "width_m": 4.0, "length_m": 5.0, "height_m": 2.5}'`
+4. Add a measurement point and note the `id` of the answer as `POINT_ID`:
+   `curl -X POST http://192.0.2.10:8765/api/v1/rooms/living/points -H "Authorization: Bearer $HIFISYNC_ACOUSTICS_TOKEN" -H "Content-Type: application/json" -d '{"label": "Sofa", "x": 1.0, "y": 1.5, "z": 1.1}'`
+5. Create the node's token (printed once):
+   `hifisync-acoustics token create node-a --role node --node node-a --data ./data`
+6. Put it in the node's `secrets.yaml` next to its YAML:
+   `acoustics_node_token: "<the token from step 5>"`
+7. Set `engine_url` and `node_id` in the YAML (see [YAML](#yaml)) and flash the node:
+   `uvx esphome@2026.9.1 run capture-node.yaml`
+8. Check that the node registered: its entry has a `last_seen_at`.
+   `curl http://192.0.2.10:8765/api/v1/nodes -H "Authorization: Bearer $HIFISYNC_ACOUSTICS_TOKEN"`
+9. Measure:
+   `hifisync-acoustics measure --url http://192.0.2.10:8765 --room living --assign POINT_ID=node-a --play "afplay {file}"`
+
+Step 6 is the only place the node token is written down. Without `--play`, `measure` prints
+the sweep file and the seconds left to start playback.
+
 ## Requirements
 
 - **ESP32 with PSRAM.** The capture buffer is `capture_s × 96 000` bytes: 5.5 MiB for the
