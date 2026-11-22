@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import dataclasses
+import math
 from dataclasses import dataclass
 
 import numpy as np
@@ -36,7 +37,7 @@ class PointResult:
     meta: dict
 
     def to_json(self) -> dict:
-        return {
+        return _clean({
             "fr": {
                 "freqs_hz": self.fr.freqs_hz.tolist(),
                 "level_db": self.fr.level_db.tolist(),
@@ -50,7 +51,18 @@ class PointResult:
             "calibrated": self.calibrated,
             "preflight": dataclasses.asdict(self.preflight),
             "meta": self.meta,
-        }
+        })
+
+
+def _clean(v):
+    """Copy of a JSON structure with NaN and infinities replaced by None."""
+    if isinstance(v, float):
+        return v if math.isfinite(v) else None
+    if isinstance(v, dict):
+        return {k: _clean(x) for k, x in v.items()}
+    if isinstance(v, list):
+        return [_clean(x) for x in v]
+    return v
 
 
 def _mid_rt60(decay: list[DecayTimes]) -> float | None:

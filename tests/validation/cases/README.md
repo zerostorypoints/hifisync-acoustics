@@ -8,7 +8,7 @@ A case directory holds:
 - `ir.wav`: an openly licensed room impulse response (PCM 16/24 bit or float 32).
 - `rew_fr.txt`: REW "Export measurement as text" of the FR at 1/6 octave smoothing.
 - `rew_rt60.txt`: REW RT60 export (octave bands, EDT/T20/T30 columns) as text.
-- `rew_fr_unsmoothed.txt` (optional): the same FR export with no smoothing; enables the peak check below 200 Hz.
+- `rew_fr_unsmoothed.txt`: the same FR export with no smoothing; required for the peak check below 200 Hz (a case without it fails `peaks`).
 - `SOURCE.md`: where the IR comes from, its licence and the attribution it requires.
 
 To create one in REW: import `ir.wav` (File > Import impulse response), then

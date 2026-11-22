@@ -7,7 +7,7 @@ whoever has it installed creates the exports by hand.
 Thresholds: FR within 0.5 dB at 1/6 octave smoothing from 30 Hz to 10 kHz (after
 removing the mean level offset, since REW's import level is arbitrary); T20 and
 T30 within 5 % in the 125 Hz to 4 kHz octave bands; low-frequency peaks below
-200 Hz within 1 Hz (needs the unsmoothed export).
+200 Hz within 1 Hz (needs the unsmoothed export; a case without it fails `peaks`).
 
 ## Case layout
 
@@ -16,7 +16,7 @@ T30 within 5 % in the 125 Hz to 4 kHz octave bands; low-frequency peaks below
   ir.wav                    impulse response (PCM 16/24 bit or float 32)
   rew_fr.txt                REW FR export, 1/6 octave smoothing
   rew_rt60.txt              REW RT60 export, octave bands, EDT/T20/T30
-  rew_fr_unsmoothed.txt     optional, enables the peak check
+  rew_fr_unsmoothed.txt     required, for the peak check
   SOURCE.md                 licence and attribution (shared cases only)
 ```
 
@@ -48,5 +48,4 @@ anywhere outside it.
    uv run hifisync-acoustics compare-rew /path/to/case
    ```
 
-   One line per metric (`fr`, `t20`, `t30`, and `peaks` when the unsmoothed
-   export exists), then `ok` or `FAIL <metric>`; the exit code is 0 or 1.
+   One line per metric (`fr`, `t20`, `t30`, `peaks`), then `ok` or `FAIL <metric>`; the exit code is 0 or 1.

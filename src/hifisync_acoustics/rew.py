@@ -18,7 +18,7 @@ from pathlib import Path
 
 import numpy as np
 
-from hifisync_acoustics.analysis.decay import DecayTimes, decay_times
+from hifisync_acoustics.analysis.decay import OCTAVE_BANDS_HZ, DecayTimes, decay_times
 from hifisync_acoustics.analysis.ir import ir_from_wav
 from hifisync_acoustics.analysis.modes import low_frequency_peaks
 from hifisync_acoustics.analysis.response import FrequencyResponse, frequency_response
@@ -29,6 +29,7 @@ FR_TOLERANCE_DB = 0.5
 DECAY_BANDS_HZ = (125, 250, 500, 1000, 2000, 4000)
 DECAY_TOLERANCE = 0.05
 PEAK_TOLERANCE_HZ = 1.0
+BAND_LABEL_TOLERANCE = 0.06  # REW labels octave bands 125.89, 251.19, ...; match within 6 %
 
 _NUMBER = re.compile(r"[-+]?(?:\d+\.?\d*|\.\d+)(?:[eE][-+]?\d+)?")
 
@@ -64,11 +65,25 @@ def read_rew_fr(path: Path) -> FrequencyResponse:
     return FrequencyResponse(freqs_hz=arr[:, 0], level_db=arr[:, 1], smoothing=None)
 
 
+def _check_span(path: Path, fr: FrequencyResponse) -> None:
+    lo, hi = FR_BAND_HZ
+    if fr.freqs_hz[0] > lo or fr.freqs_hz[-1] < hi:
+        raise _bad(
+            path,
+            f"covers {fr.freqs_hz[0]:g}-{fr.freqs_hz[-1]:g} Hz, need {lo:g}-{hi:g} Hz",
+        )
+
+
 def _cells(line: str) -> list[str]:
     for sep in ("\t", ";", ","):
         if sep in line:
             return [c.strip() for c in line.split(sep)]
     return [c.strip() for c in re.split(r"\s{2,}", line)]
+
+
+def _band(f: float) -> int:
+    nearest = min(OCTAVE_BANDS_HZ, key=lambda b: abs(b - f))
+    return nearest if abs(nearest - f) <= BAND_LABEL_TOLERANCE * nearest else int(round(f))
 
 
 def _seconds(cell: str) -> float | None:
@@ -107,7 +122,7 @@ def read_rew_rt60(path: Path) -> list[DecayTimes]:
             continue
         out.append(
             DecayTimes(
-                band_hz=int(round(f)),
+                band_hz=_band(f),
                 edt_s=cell(cells, c_edt),
                 t20_s=cell(cells, c_t20),
                 t30_s=cell(cells, c_t30),
@@ -139,8 +154,11 @@ def _compare_decay(name: str, engine: list[DecayTimes], rew: list[DecayTimes]) -
     worst, worst_band, n = 0.0, None, 0
     for d in rew:
         a, b = eng.get(d.band_hz), getattr(d, attr)
-        if d.band_hz not in DECAY_BANDS_HZ or a is None or b is None or b == 0:
+        if d.band_hz not in DECAY_BANDS_HZ or b is None or b == 0:
             continue
+        if a is None:
+            return MetricResult(name, False, float("nan"), DECAY_TOLERANCE,
+                                f"engine has no {name.upper()} at {d.band_hz} Hz where REW reports {b:g} s")
         n += 1
         rel = abs(a - b) / b
         if rel >= worst:
@@ -163,14 +181,16 @@ def _compare_peaks(engine: list, rew: list) -> MetricResult:
 
 def compare_case(case_dir: Path) -> list[MetricResult]:
     """Run the engine on ``case_dir/ir.wav`` and compare with ``rew_fr.txt`` (1/6
-    smoothing), ``rew_rt60.txt`` and, when present, ``rew_fr_unsmoothed.txt``
-    (peak check). Results come in the order fr, t20, t30, peaks."""
+    smoothing), ``rew_rt60.txt`` and ``rew_fr_unsmoothed.txt`` (peak check; a missing
+    file fails ``peaks``). Results come in the order fr, t20, t30, peaks."""
     case_dir = Path(case_dir)
     for name in ("ir.wav", "rew_fr.txt", "rew_rt60.txt"):
         if not (case_dir / name).is_file():
             raise RecordingError("bad_case", f"{case_dir} lacks {name}")
     ir = ir_from_wav(case_dir / "ir.wav")
-    results = [_compare_fr(frequency_response(ir, smoothing=1 / 6), read_rew_fr(case_dir / "rew_fr.txt"))]
+    rew_fr = read_rew_fr(case_dir / "rew_fr.txt")
+    _check_span(case_dir / "rew_fr.txt", rew_fr)
+    results = [_compare_fr(frequency_response(ir, smoothing=1 / 6), rew_fr)]
     engine_decay = decay_times(ir)
     rew_decay = read_rew_rt60(case_dir / "rew_rt60.txt")
     results += [_compare_decay("t20", engine_decay, rew_decay), _compare_decay("t30", engine_decay, rew_decay)]
@@ -180,4 +200,7 @@ def compare_case(case_dir: Path) -> list[MetricResult]:
             low_frequency_peaks(frequency_response(ir, smoothing=None)),
             low_frequency_peaks(read_rew_fr(raw)),
         ))
+    else:
+        results.append(MetricResult("peaks", False, float("nan"), PEAK_TOLERANCE_HZ,
+                                    "missing rew_fr_unsmoothed.txt"))
     return results

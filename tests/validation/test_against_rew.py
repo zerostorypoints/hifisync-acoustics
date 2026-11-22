@@ -95,17 +95,62 @@ def test_synthetic_case_passes(tmp_path):
 
 @pytest.mark.parametrize(
     "kwargs, metric",
-    [({"bump_db": 0.8}, "fr"), ({"rt_scale": 1.08}, "t20"), ({"rt_scale": 1.08}, "t30"), ({"peak_df": 1.5}, "peaks")],
+    [({"bump_db": 0.6}, "fr"), ({"rt_scale": 1.06}, "t20"), ({"rt_scale": 1.06}, "t30"), ({"peak_df": 1.2}, "peaks")],
 )
 def test_synthetic_case_fails_just_outside(tmp_path, kwargs, metric):
     res = _by_name(compare_case(_make_case(tmp_path, **kwargs)))
     assert not res[metric].ok
 
 
-def test_peaks_skipped_without_unsmoothed_export(tmp_path):
+def test_missing_unsmoothed_export_fails_peaks(tmp_path, capsys):
     case = _make_case(tmp_path)
     (case / "rew_fr_unsmoothed.txt").unlink()
-    assert "peaks" not in _by_name(compare_case(case))
+    assert main(["compare-rew", str(case)]) == 1
+    out = capsys.readouterr().out
+    assert "missing rew_fr_unsmoothed.txt" in out
+    assert out.strip().splitlines()[-1] == "FAIL peaks"
+
+
+def test_engine_missing_band_fails(tmp_path):
+    from hifisync_acoustics.analysis.decay import DecayTimes
+    from hifisync_acoustics.rew import _compare_decay
+
+    eng = [DecayTimes(500, 0.5, None, 0.5, -60.0), DecayTimes(1000, 0.5, 0.5, 0.5, -60.0)]
+    rew = [DecayTimes(500, 0.5, 0.5, 0.5, float("nan")), DecayTimes(1000, 0.5, 0.5, 0.5, float("nan"))]
+    r = _compare_decay("t20", eng, rew)
+    assert not r.ok and "500" in r.detail
+
+
+def test_fr_export_must_span_band(tmp_path):
+    from hifisync_acoustics.wav import RecordingError
+
+    case = _make_case(tmp_path)
+    lines = (case / "rew_fr.txt").read_text().splitlines()
+    (case / "rew_fr.txt").write_text("\n".join(ln for ln in lines if ln.startswith("*") or float(ln.split()[0]) < 5000) + "\n")
+    with pytest.raises(RecordingError) as exc:
+        compare_case(case)
+    assert exc.value.code == "bad_rew_export"
+    assert "covers 20-" in str(exc.value) and "need 30-10000 Hz" in str(exc.value)
+
+
+def test_rt60_band_labels_snap_to_octave_bands(tmp_path):
+    q = tmp_path / "rt.txt"
+    q.write_text("Freq (Hz)\tEDT (s)\tT20 (s)\tT30 (s)\n125.89\t0.5\t0.6\t0.6\n251.19\t0.4\t0.4\t0.4\n1000.0\t0.3\t0.3\t0.3\n")
+    assert [x.band_hz for x in read_rew_rt60(q)] == [125, 250, 1000]
+
+
+def test_to_json_has_no_nan(tmp_path):
+    from hifisync_acoustics.analysis.sweep import SweepSpec, generate_sweep
+    from hifisync_acoustics.report import analyse_recording
+    from hifisync_acoustics.wav import read_wav
+
+    sweep = generate_sweep(SweepSpec(duration_s=2.0))
+    rec_path = tmp_path / "rec.wav"
+    _recording_wav(rec_path, sweep)
+    res = analyse_recording(read_wav(rec_path), sweep, None, None)
+    res.decay[0] = type(res.decay[0])(63, None, None, None, float("nan"))
+    json.dumps(res.to_json(), allow_nan=False)
+    assert res.to_json()["decay"][0]["noise_floor_db"] is None
 
 
 def test_rew_parsers(tmp_path):
