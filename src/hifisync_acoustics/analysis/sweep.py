@@ -61,6 +61,16 @@ def generate_sweep(spec: SweepSpec = SweepSpec()) -> Sweep:
         one[-n_out:] *= _fade(n_out, False)
     one *= 10 ** (spec.peak_dbfs / 20) / np.max(np.abs(one))
 
+    # Normalise the inverse so the emitted sweep convolved with it has
+    # exactly 0 dB magnitude at 1 kHz (unit-gain deconvolution).
+    n_fft = 1 << int(np.ceil(np.log2(2 * n)))
+    k = 1000.0 * n_fft / fs
+    k0 = int(np.floor(k))
+    bins = np.exp(-2j * np.pi * np.outer([k0, k0 + 1], np.arange(n)) / n_fft)
+    m0, m1 = np.abs(bins @ one) * np.abs(bins @ inverse)
+    w = k - k0
+    inverse = inverse / ((1 - w) * m0 + w * m1)
+
     gap = np.zeros(int(round(spec.gap_s * fs)))
     parts: list[np.ndarray] = []
     for i in range(spec.repeats):
