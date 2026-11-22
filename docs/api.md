@@ -183,7 +183,8 @@ reaches `recording` with its first upload or when it is armed.
   - A session that is not `created`, or is already armed, answers 409
     `session_not_accepting`, and no command is created.
 - `PUT /sessions/{id}/recordings/{node_id}` uploads the node's recording as the raw request
-  body (`audio/wav`; PCM 16 or 24 bit, or float 32; channel 0 of a multichannel file). The
+  body (`audio/wav`; PCM 16 or 24 bit, or float 32; channel 0 of a multichannel file, and
+  channel 1 too for a 2-channel file, see `binaural` below). The
   answer is 200:
 
   ```json
@@ -242,11 +243,37 @@ reaches `recording` with its first upload or when it is armed.
       `{"third_octave": {"100": …, …, "10000": …}, "octave": {"125": …, …, "8000": …}}`.
       The direct window is the first 5 ms after each direct peak (a half-Hann fall from the
       peak, with a 0.5 ms half-Hann rise before it); the steady window is the whole response.
+  - `binaural`, only for a 2-channel recording (a binaural head): `{source: {itd_us, ild_db,
+    iacc_e, iacc_l, iacc_a, channels}}`, one entry per source. Channel 0 is the left ear and
+    channel 1 the right ear, in the order the node records them; `channels` says so:
+    `{"0": "left ear", "1": "right ear"}`. Both channels are cut at the same samples: the
+    sweeps, the clock fit and each repeat's direct peak are found on channel 0, so the
+    delay between the ears is kept. Time zero is the earlier of the two ears' direct peaks
+    less 0.5 ms; the windows are rectangular, E 0–80 ms, L 80 ms–1 s and A 0–1 s. On a
+    window the interaural cross-correlation is `Σ l(t)·r(t+τ) / √(Σ l² · Σ r²)` for
+    |τ| ≤ 1 ms, on the broadband responses.
+    - `itd_us`: the lag of the maximum of the cross-correlation on E (refined between
+      samples by a parabola), left minus right in µs: negative when the left ear hears the
+      source first.
+    - `ild_db`: left minus right in dB on E, per octave `{"500": …, …, "8000": …}`.
+    - `iacc_e`, `iacc_l`, `iacc_a`: the maximum of the absolute cross-correlation on E, L
+      and A, from 0 to 1.
+
+    `fr`, `decay`, `peaks`, `sources` and `stereo` stay those of channel 0. To check that
+    the ears are not swapped on the node, measure with `sources: ["left", "right"]`: the
+    left loudspeaker's `itd_us` must be negative and its `ild_db` at 4000 and 8000 Hz
+    positive, the right loudspeaker's the opposite. If they are reversed, the node's channel
+    0 is the right ear; swap the microphones' L/R wiring (see
+    [Node firmware](node-firmware.md#stereo-two-microphones-on-one-bus)).
 
   With several sources, pre-flight runs on channel 0 for each source's part of the
   recording, after the recording's own lead-in. The first failing source fails the point
   with the usual code, its `failure_detail` names the source and channel, for example
   `preflight: no_signal (source right, channel 0)`, and `preflight` is that source's check.
+  A 2-channel recording is then checked the same way on channel 1, with the parts placed
+  where channel 0 found them; a failure there names channel 1, for example
+  `preflight: no_signal (source left, channel 1)` or, for `["both"]`,
+  `preflight: no_signal (source both, channel 1)`.
   When a source is silent and the order of the sweeps found cannot tell which one it is
   (for example a silent first source with room left after the last sweep), the point fails
   `no_signal` with a detail saying so; it is never reported as the other source. A
@@ -308,8 +335,10 @@ in the URL. Every request it makes on its own node sets the node's `last_seen_at
 4. **Upload.** When the capture ends, `PUT` the WAV to `upload_path` as the raw body, with
    `Content-Type: audio/wav` and `Content-Length` set (44-byte header + 2 bytes per sample
    per channel). A node may upload a 2-channel WAV. The engine stores it whole, in the export
-   too, but analyses channel 0 only: the result's `meta` reports `"channels": 2` and
-   `"channel_used": 0`, and channel 1 is not analysed.
+   too. It analyses channel 0 for the mono fields (`meta` reports `"channels": 2` and
+   `"channel_used": 0`), checks both channels in pre-flight and reports `binaural` from
+   channel 0 as the left ear and channel 1 as the right ear. A file with more than 2
+   channels is analysed on channel 0 only.
    The answer is 200 `{"point_state", "failure", "detail", "session_state"}` (see
    `PUT /sessions/{id}/recordings/{node_id}`), and the command becomes `done`. On a network
    error, a 5xx answer or 400 `incomplete_body`, send the whole upload again, a few times at

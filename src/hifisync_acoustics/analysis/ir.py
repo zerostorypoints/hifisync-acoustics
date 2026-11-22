@@ -104,11 +104,19 @@ def _average(
                            arrival_s=arrival_s)
 
 
-def _single_source(x: np.ndarray, sweep: Sweep, spec: SweepSpec,
-                   repeat: int | None) -> ImpulseResponse:
-    """One source: the lattice of ``spec.repeats`` sweeps, averaged."""
+@dataclass(frozen=True)
+class _Cut:
+    """Where one source's repeats sit in the recording, found on the reference channel."""
+
+    peaks: list[int]  # direct peak of each repeat averaged
+    cap: int  # most samples kept after each peak
+    arrival_s: float
+    clock_ppm: float | None = None
+
+
+def _single_cut(y: np.ndarray, n_samples: int, spec: SweepSpec, repeat: int | None) -> _Cut:
+    """One source: the lattice of ``spec.repeats`` sweeps in the deconvolved ``y``."""
     fs = spec.sample_rate
-    y = fftconvolve(x, sweep.inverse)
     mag = np.abs(y)
     period = int(round((spec.duration_s + spec.gap_s) * fs))
     n_rep = spec.repeats
@@ -136,7 +144,15 @@ def _single_source(x: np.ndarray, sweep: Sweep, spec: SweepSpec,
     # Tail: what the recording holds after each peak, capped by the next
     # repeat (repeats > 1) or MAX_SINGLE_TAIL_S (one repeat).
     cap = int(round(spec.gap_s * fs)) if n_rep > 1 else int(MAX_SINGLE_TAIL_S * fs)
-    return _average(y, peaks, len(x), cap, fs, arrival)
+    return _Cut(peaks=peaks, cap=cap, arrival_s=arrival)
+
+
+def _single_source(x: np.ndarray, sweep: Sweep, spec: SweepSpec,
+                   repeat: int | None) -> ImpulseResponse:
+    """One source: the lattice of ``spec.repeats`` sweeps, averaged."""
+    y = fftconvolve(x, sweep.inverse)
+    cut = _single_cut(y, len(x), spec, repeat)
+    return _average(y, cut.peaks, len(x), cut.cap, spec.sample_rate, cut.arrival_s)
 
 
 def impulse_response(rec: Recording, sweep: Sweep, repeat: int | None = None) -> ImpulseResponse:
@@ -148,10 +164,7 @@ def impulse_response(rec: Recording, sweep: Sweep, repeat: int | None = None) ->
 
 
 def _channel(rec: Recording, channel: int) -> np.ndarray:
-    if channel != rec.channel_used:
-        raise ValueError(
-            f"channel {channel} is not loaded; this recording holds channel {rec.channel_used}")
-    return rec.samples
+    return rec.channel(channel)
 
 
 @dataclass(frozen=True)
@@ -219,6 +232,26 @@ def _blocks(spec: SweepSpec, slots: list[int]) -> dict[str, list[int]]:
     return {src: slots[i * r : (i + 1) * r] for i, src in enumerate(spec.sources)}
 
 
+def _source_cuts(ref: np.ndarray, sweep: Sweep, spec: SweepSpec
+                 ) -> tuple[dict[str, _Cut], np.ndarray]:
+    """Each source's repeats in the reference channel ``ref``, and ``ref`` deconvolved."""
+    fs = spec.sample_rate
+    if len(spec.sources) == 1:
+        y = fftconvolve(ref, sweep.inverse)
+        return {spec.sources[0]: _single_cut(y, len(ref), spec, None)}, y
+    lat = _locate(ref, sweep, spec)
+    fit = _fit_sources(lat, spec)
+    half = int(REFINE_S * fs)
+    cap = int(round(spec.gap_s * fs))
+    mag = np.abs(lat.y)
+    cuts = {}
+    for src, ks in _blocks(spec, list(range(spec.sweep_count))).items():
+        peaks = [_refine(mag, int(round(fit.offset[src] + k * fit.period)), half) for k in ks]
+        arrival = float(np.mean([p - k * fit.period for k, p in zip(ks, peaks)])) / fs
+        cuts[src] = _Cut(peaks=peaks, cap=cap, arrival_s=arrival, clock_ppm=fit.clock_ppm)
+    return cuts, lat.y
+
+
 def ir_per_source(
     rec: Recording, sweep: Sweep, spec: SweepSpec | None = None, channel: int = 0
 ) -> dict[str, ImpulseResponse]:
@@ -230,25 +263,23 @@ def ir_per_source(
     peak is searched within SOURCE_SEARCH_S of its lattice slot, then refined per repeat
     within REFINE_S; the tail is capped by the next sweep (``gap_s``). A silent source still
     gets a response (noise): run pre-flight on ``source_recordings`` first.
+
+    The lattice, the clock fit and the per-repeat peaks are always found on channel 0, and
+    every channel is cut at those same samples. The channels of one node share its clock, so
+    responses of different channels line up sample for sample (``arrival_s`` and lengths are
+    equal), and a delay between them, such as an interaural one, is kept in the samples.
     """
     spec = sweep.spec if spec is None else spec
+    ref = _channel(rec, 0)
     x = _channel(rec, channel)
     _check(len(x), rec.sample_rate, spec)
-    if len(spec.sources) == 1:
-        return {spec.sources[0]: _single_source(x, sweep, spec, None)}
-
+    cuts, y_ref = _source_cuts(ref, sweep, spec)
+    y = y_ref if channel == 0 else fftconvolve(x, sweep.inverse)
     fs = spec.sample_rate
-    lat = _locate(x, sweep, spec)
-    fit = _fit_sources(lat, spec)
-    half = int(REFINE_S * fs)
-    cap = int(round(spec.gap_s * fs))
-    mag = np.abs(lat.y)
     out = {}
-    for src, ks in _blocks(spec, list(range(spec.sweep_count))).items():
-        peaks = [_refine(mag, int(round(fit.offset[src] + k * fit.period)), half) for k in ks]
-        arrival = float(np.mean([p - k * fit.period for k, p in zip(ks, peaks)])) / fs
-        ir = _average(lat.y, peaks, len(x), cap, fs, arrival)
-        out[src] = dataclasses.replace(ir, clock_ppm=fit.clock_ppm)
+    for src, cut in cuts.items():
+        ir = _average(y, cut.peaks, len(x), cut.cap, fs, cut.arrival_s)
+        out[src] = dataclasses.replace(ir, clock_ppm=cut.clock_ppm) if len(cuts) > 1 else ir
     return out
 
 
@@ -311,8 +342,10 @@ def _fit_sources(lat: _Lattice, spec: SweepSpec) -> _SourceFit:
 def source_recordings(
     rec: Recording, sweep: Sweep, spec: SweepSpec | None = None, channel: int = 0
 ) -> dict[str, Recording]:
-    """For pre-flight per source: each source's block of the recording, after the
-    recording's own lead-in (the noise before the first sweep of the file).
+    """For pre-flight per source: each source's block of one channel of the recording,
+    after the recording's own lead-in (the noise before the first sweep of the file).
+    Blocks are placed on channel 0 for every channel, so a silent second channel fails its
+    own pre-flight instead of moving the blocks.
 
     A block runs from SOURCE_SEARCH_S before the start of the source's first sweep to
     SOURCE_SEARCH_S before the start of the next source's first sweep (to the end of the
@@ -321,9 +354,9 @@ def source_recordings(
     spec = sweep.spec if spec is None else spec
     x = _channel(rec, channel)
     if len(spec.sources) == 1:
-        return {spec.sources[0]: dataclasses.replace(rec, samples=x)}
+        return {spec.sources[0]: _one_channel(rec, channel, x)}
     _check(len(x), rec.sample_rate, spec)
-    lat = _locate(x, sweep, spec)
+    lat = _locate(_channel(rec, 0), sweep, spec)
     fit = _fit_sources(lat, spec)
     slots_fit = [int(round(fit.offset[spec.sources[k // spec.repeats]] + k * fit.period))
                  for k in range(spec.sweep_count)]
@@ -338,8 +371,12 @@ def source_recordings(
     for i, (src, slots) in enumerate(blocks):
         start = min(max(slots[0] - (n - 1) - margin, lead_end), len(x))
         end = len(x) if i == len(blocks) - 1 else min(slots[-1] + gap - margin, len(x))
-        out[src] = dataclasses.replace(rec, samples=np.concatenate([lead, x[start:end]]))
+        out[src] = _one_channel(rec, channel, np.concatenate([lead, x[start:end]]))
     return out
+
+
+def _one_channel(rec: Recording, channel: int, samples: np.ndarray) -> Recording:
+    return dataclasses.replace(rec, samples=samples, channel_used=channel, all_samples=None)
 
 
 def ir_from_wav(path: Path) -> ImpulseResponse:

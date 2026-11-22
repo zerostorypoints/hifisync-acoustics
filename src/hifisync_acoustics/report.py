@@ -8,6 +8,7 @@ from dataclasses import dataclass, field
 
 import numpy as np
 
+from hifisync_acoustics.analysis.binaural import Binaural, binaural
 from hifisync_acoustics.analysis.calibration import CalibrationCurve
 from hifisync_acoustics.analysis.decay import DecayTimes, decay_times
 from hifisync_acoustics.analysis.ir import (
@@ -64,6 +65,7 @@ class PointResult:
     stereo: StereoReport | None = None
     source_preflight: dict[str, PreflightResult] = field(default_factory=dict)
     failure_detail: str | None = None  # the point's failure detail when pre-flight failed
+    binaural: dict[str, Binaural] | None = None  # per source, 2-channel recordings only
 
     def to_json(self) -> dict:
         out = {
@@ -92,6 +94,18 @@ class PointResult:
                 "level_diff_steady_db": _bands_json(self.stereo.level_diff_steady_db),
                 "clock_ppm": self.stereo.clock_ppm,
                 "drift_corrected": self.stereo.drift_corrected,
+            }
+        if self.binaural is not None:
+            out["binaural"] = {
+                name: {
+                    "itd_us": b.itd_us,
+                    "ild_db": {str(f): v for f, v in b.ild_db.items()},
+                    "iacc_e": b.iacc_e,
+                    "iacc_l": b.iacc_l,
+                    "iacc_a": b.iacc_a,
+                    "channels": {str(c): label for c, label in b.channels.items()},
+                }
+                for name, b in self.binaural.items()
             }
         return _clean(out)
 
@@ -143,21 +157,35 @@ def _source_result(ir: ImpulseResponse, dims: RoomDimensions | None,
 
 
 def _preflight_sources(rec: Recording, sweep: Sweep) -> tuple[dict[str, PreflightResult], str | None]:
-    """Pre-flight of each source on channel 0, and the failure detail of the first that fails.
+    """Pre-flight of each source on channel 0, then on channel 1 for a 2-channel recording,
+    and the failure detail of the first check that fails.
 
-    One source checks the whole recording, as before sources existed. Several check each
-    source's block after the recording's lead-in (``source_recordings``)."""
+    One source checks the whole channel, as before sources existed. Several check each
+    source's block after the recording's lead-in (``source_recordings``). The returned checks
+    are channel 0's, or the failing one's for the source that failed."""
+    results, detail = _preflight_channel(rec, sweep, 0)
+    if detail is not None or rec.channels != 2:
+        return results, detail
+    second, detail = _preflight_channel(rec, sweep, 1)
+    if detail is not None:
+        failed = next(name for name, pre in second.items() if not pre.ok)
+        results = {**results, failed: second[failed]}
+    return results, detail
+
+
+def _preflight_channel(rec: Recording, sweep: Sweep,
+                       channel: int) -> tuple[dict[str, PreflightResult], str | None]:
     spec = sweep.spec
     if len(spec.sources) == 1:
-        pre = preflight(rec, sweep)
         name = spec.sources[0]
+        pre = preflight(source_recordings(rec, sweep, spec, channel=channel)[name], sweep)
         if pre.ok:
             return {name: pre}, None
-        # A ("both",) session keeps its detail as before sources existed.
-        where = "" if name == "both" else f" (source {name}, channel 0)"
+        # A ("both",) session keeps its channel 0 detail as before sources existed.
+        where = "" if name == "both" and channel == 0 else f" (source {name}, channel {channel})"
         return {name: pre}, f"preflight: {pre.code}{where}"
     try:
-        blocks = source_recordings(rec, sweep, spec, channel=0)
+        blocks = source_recordings(rec, sweep, spec, channel=channel)
     except RecordingError as exc:
         if exc.code != "no_signal":
             raise
@@ -169,7 +197,7 @@ def _preflight_sources(rec: Recording, sweep: Sweep) -> tuple[dict[str, Prefligh
     failed = next((name for name, pre in results.items() if not pre.ok), None)
     if failed is None:
         return results, None
-    return results, f"preflight: {results[failed].code} (source {failed}, channel 0)"
+    return results, f"preflight: {results[failed].code} (source {failed}, channel {channel})"
 
 
 def analyse_recording(
@@ -202,6 +230,11 @@ def analyse_recording(
     for name, ir in irs.items():
         sources[name].direct_ms = (ir.arrival_s - earliest) * 1000.0
 
+    ears = None
+    if rec.channels == 2:
+        right_ear = ir_per_source(rec, sweep, spec, channel=1)
+        ears = {name: binaural(irs[name], right_ear[name], rec.sample_rate) for name in irs}
+
     first = sources[spec.sources[0]]
     schroeder = None
     if dims is not None:
@@ -209,4 +242,4 @@ def analyse_recording(
         schroeder = schroeder_frequency(rt, dims) if rt is not None else None
     return PointResult(first.fr, first.decay, first.peaks, schroeder, calibration is not None,
                        source_pre[spec.sources[0]], meta, sources=sources,
-                       stereo=stereo_report(irs), source_preflight=source_pre)
+                       stereo=stereo_report(irs), source_preflight=source_pre, binaural=ears)

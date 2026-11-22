@@ -40,6 +40,8 @@ def test_reads_stereo_24bit_and_float32(tmp_path, subtype):
     assert rec.sample_rate == 48000
     assert rec.subtype == subtype
     np.testing.assert_allclose(rec.samples, data[:, 0], atol=1e-3)
+    np.testing.assert_allclose(rec.channel(1), data[:, 1], atol=1e-3)
+    assert rec.channel(0) is rec.samples
 
 
 def test_mono_reads(tmp_path):
@@ -47,6 +49,9 @@ def test_mono_reads(tmp_path):
     wavfile.write(path, 48000, (_stereo()[:, 0]).astype(np.float32))
     rec = read_wav(path)
     assert rec.channels == 1
+    assert rec.channel(0) is rec.samples
+    with pytest.raises(ValueError):
+        rec.channel(1)
 
 
 def test_unsupported_format(tmp_path):
