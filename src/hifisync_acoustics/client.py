@@ -103,22 +103,34 @@ def _node_line(n: dict[str, Any]) -> str:
     return f"node {n['node_id']}: {n['command_state'] or 'not armed'}{detail}"
 
 
-def _wait_ready(engine: Engine, sid: str, out: Callable[[str], None]) -> dict[str, Any] | None:
-    """Poll until no command is pending or taken. None when that never happens, or when no
-    node is recording (or already done)."""
-    deadline = time.monotonic() + READY_TIMEOUT_S
+def _now() -> float:
+    """The clock of the start window; tests replace it."""
+    return time.monotonic()
+
+
+def _wait_ready(engine: Engine, sid: str,
+                out: Callable[[str], None]) -> tuple[dict[str, Any], float] | None:
+    """Poll until no command is pending or taken. Returns the session and the time the first
+    ``recording`` (or ``done``) node was seen: each node's start window runs from its own
+    ack, so the earliest one bounds the time left to start playback. None when that never
+    happens, or when no node is recording (or already done)."""
+    deadline = _now() + READY_TIMEOUT_S
+    first_recording: float | None = None
     while True:
         s = engine.json("GET", f"/sessions/{sid}")
+        seen = _now()
         states = [n["command_state"] for n in s["nodes"]]
+        if first_recording is None and ("recording" in states or "done" in states):
+            first_recording = seen
         if not any(st in ("pending", "taken") for st in states):
             for n in s["nodes"]:
                 if n["command_state"] in ("failed", "expired"):
                     out(f"warning: {_node_line(n)}; its point will fail")
-            if "recording" in states or "done" in states:
-                return s
+            if first_recording is not None:
+                return s, first_recording
             _report_not_ready(s, out)
             return None
-        if time.monotonic() >= deadline:
+        if seen >= deadline:
             out(f"error: nodes not ready after {READY_TIMEOUT_S:.0f} s")
             _report_not_ready(s, out)
             return None
@@ -203,8 +215,10 @@ def run_measure(args, out: Callable[[str], None] = print,
     engine.json("POST", f"/sessions/{sid}/arm", {"start_window_s": args.start_window})
     out(f"session {sid} armed; waiting for nodes")
 
-    if _wait_ready(engine, sid, out) is None:
+    ready = _wait_ready(engine, sid, out)
+    if ready is None:
         return EXIT_FAILED
+    _, first_recording = ready
 
     query = urllib.parse.urlencode({"duration": args.duration, "repeats": args.repeats})
     sweep = engine.call("GET", f"/sweep.wav?{query}").body
@@ -212,6 +226,11 @@ def run_measure(args, out: Callable[[str], None] = print,
         f.write(sweep)
         path = f.name
     try:
+        remaining = args.start_window - (_now() - first_recording)
+        if remaining <= 0:
+            out("error: start window passed before all nodes were ready; "
+                "re-run with a larger --start-window")
+            return EXIT_FAILED
         if play:
             cmd = [part.replace("{file}", path) for part in play]
             try:
@@ -225,7 +244,7 @@ def run_measure(args, out: Callable[[str], None] = print,
                         "the sweep may not have played")
         else:
             out(f"Play the sweep now: {path}")
-            out(f"The nodes are recording; start playback within {args.start_window:g} s.")
+            out(f"The nodes are recording; start playback within {remaining:.1f} s.")
         timeout = capture_s(SweepSpec(duration_s=args.duration, repeats=args.repeats),
                             args.start_window) + RESULT_GRACE_S
         final = _wait_finished(engine, sid, timeout)

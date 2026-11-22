@@ -171,3 +171,34 @@ def test_player_oserror_warns(setup, node, monkeypatch, capsys):
     monkeypatch.setattr(measure_client.subprocess, "run", boom)
     assert main(_args(setup, "--play", "echo {file}")) == 0
     assert "player failed to start" in capsys.readouterr().out
+
+
+def _clock_jumps_on_sweep(monkeypatch, jump_s):
+    """A fake clock that stands still, except that downloading the sweep takes ``jump_s``."""
+    now = [1000.0]
+    monkeypatch.setattr(measure_client, "_now", lambda: now[0])
+    fetch = measure_client.http_request
+
+    def slow_sweep(method, url, headers, body):
+        if "/sweep.wav" in url:
+            now[0] += jump_s
+        return fetch(method, url, headers, body)
+
+    monkeypatch.setattr(measure_client, "http_request", slow_sweep)
+
+
+def test_manual_mode_prints_remaining_start_window(setup, node, monkeypatch, capsys):
+    _clock_jumps_on_sweep(monkeypatch, 4.0)
+    assert main(_args(setup, "--start-window", "10")) == 0
+    assert "start playback within 6.0 s." in capsys.readouterr().out
+
+
+def test_start_window_passed_before_playback(setup, node, monkeypatch, capsys):
+    _clock_jumps_on_sweep(monkeypatch, 10.5)
+    ran = []
+    monkeypatch.setattr(measure_client.subprocess, "run", lambda *a, **k: ran.append(a))
+    assert main(_args(setup, "--start-window", "10")) == 1
+    out = capsys.readouterr().out
+    assert ("start window passed before all nodes were ready; "
+            "re-run with a larger --start-window") in out
+    assert "Play the sweep now" not in out and not ran

@@ -299,9 +299,12 @@ already exist.
    goes on when at least one node is `recording` and prints a warning for each `failed` or
    `expired` node, whose point fails. It exits 1 when no node is recording or a command is
    still `pending` or `taken` after 15 s, and prints each node's state.
-4. Downloads `sweep.wav` to a temporary file. With `--play`, runs the command with `{file}`
-   replaced, as an argument list without a shell. Without it, prints the file path and the
-   start window.
+4. Downloads `sweep.wav` to a temporary file. Each node's start window runs from its own
+   `recording` ack, so the CLI counts the window from the first `recording` it saw. If it has
+   already passed, it exits 1 with "start window passed before all nodes were ready; re-run
+   with a larger --start-window". With `--play`, runs the command with `{file}` replaced, as
+   an argument list without a shell. Without it, prints the file path and the seconds left in
+   the start window.
 5. Polls until the session is `done` or `failed`, then prints one line per point: state,
    failure, T30 at 500 Hz and 1 kHz and the strongest peak below 200 Hz. The temporary file
    is removed.
