@@ -14,6 +14,7 @@ STEP="start"
 
 cleanup() {
   docker rm -f "$NAME" >/dev/null 2>&1
+  docker rmi "$IMAGE" >/dev/null 2>&1
   rm -rf "$WORK"
 }
 fail() {
@@ -23,6 +24,7 @@ fail() {
 }
 trap cleanup EXIT
 
+# Never run this script with `set -x` and never add `curl -v`: both would print the token.
 # Authenticated call; the token goes in a header read from stdin, never in argv, URL or output.
 api() { # method path [curl args...]
   local method="$1" path="$2"; shift 2
@@ -32,7 +34,7 @@ api() { # method path [curl args...]
 jget() { python3 -c 'import json,sys; print(json.load(sys.stdin)[sys.argv[1]])' "$1"; }
 
 STEP="build"
-docker build -q -t "$IMAGE" . >/dev/null || fail
+docker build --load -q -t "$IMAGE" . >/dev/null || fail
 
 STEP="run"
 mkdir -p "$WORK/data" && chmod 777 "$WORK/data"
@@ -110,5 +112,4 @@ sys.exit(0 if any(p["point_id"] == sys.argv[1] and p["result"] for p in pts) els
 STEP="stop"
 docker stop "$NAME" >/dev/null || fail
 docker rm "$NAME" >/dev/null || fail
-docker rmi "$IMAGE" >/dev/null 2>&1 || true
 echo ok

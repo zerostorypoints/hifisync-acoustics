@@ -7,6 +7,9 @@ ghcr.io/zerostorypoints/hifisync-acoustics:<version>
 ghcr.io/zerostorypoints/hifisync-acoustics:latest
 ```
 
+Image tags carry no `v`: release `v0.1.0` is published as `0.1.0`. `latest` follows the newest
+release that is not a pre-release.
+
 It listens on port 8765 and keeps everything under `/data`. The process runs as UID/GID 10001,
 not root.
 
@@ -22,7 +25,7 @@ docker compose -f compose.example.yaml up -d
 
 The compose file uses `network_mode: host`. The engine advertises itself over mDNS
 (`_hifisync-acoustics._tcp.local.`), and multicast does not reach a container on a bridge
-network. Without host networking, publish the port instead (`-p 8765:8765`) and start the
+network. Host networking does not work on Docker Desktop (macOS and Windows). Without host networking, publish the port instead (`-p 8765:8765`) and start the
 engine with `--no-zeroconf`; clients then need its address.
 
 Plain `docker run`:
