@@ -47,7 +47,13 @@ class Response:
 
 def http_request(method: str, url: str, headers: dict[str, str],
                  body: bytes | None) -> Response:
-    req = urllib.request.Request(url, data=body, headers=headers, method=method)
+    req = urllib.request.Request(url, data=body, method=method)
+    for name, value in headers.items():
+        if name.lower() == "authorization":
+            # Sent on this request only: urllib copies ordinary headers to a redirect target.
+            req.add_unredirected_header(name, value)
+        else:
+            req.add_header(name, value)
     try:
         with urllib.request.urlopen(req, timeout=REQUEST_TIMEOUT_S) as r:
             return Response(r.status, r.read())

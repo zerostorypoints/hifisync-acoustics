@@ -202,3 +202,39 @@ def test_start_window_passed_before_playback(setup, node, monkeypatch, capsys):
     assert ("start window passed before all nodes were ready; "
             "re-run with a larger --start-window") in out
     assert "Play the sweep now" not in out and not ran
+
+
+def test_authorization_not_forwarded_on_redirect():
+    """urllib follows a redirect; the bearer token must not go to the redirect target."""
+    import http.server
+
+    seen = {}
+
+    class Handler(http.server.BaseHTTPRequestHandler):
+        def do_GET(self):
+            seen[self.path] = self.headers.get("Authorization")
+            if self.path == "/start":
+                self.send_response(302)
+                self.send_header("Location", "/elsewhere")
+                self.end_headers()
+            else:
+                self.send_response(200)
+                self.send_header("Content-Length", "2")
+                self.end_headers()
+                self.wfile.write(b"ok")
+
+        def log_message(self, *args):
+            pass
+
+    server = http.server.HTTPServer(("127.0.0.1", 0), Handler)
+    t = threading.Thread(target=server.serve_forever, daemon=True)
+    t.start()
+    try:
+        url = f"http://127.0.0.1:{server.server_port}/start"
+        r = measure_client.http_request("GET", url, {"Authorization": "Bearer secret-value"},
+                                        None)
+    finally:
+        server.shutdown()
+        server.server_close()
+    assert r.status == 200 and r.body == b"ok"
+    assert seen == {"/start": "Bearer secret-value", "/elsewhere": None}
