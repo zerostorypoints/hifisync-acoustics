@@ -287,3 +287,29 @@ async def test_calibration_errors(client, store, app_token):
     missing = {k: v for k, v in files.items() if k != "reference"}
     r = await client.post("/api/v1/nodes/n1/calibrations", files=missing, data=data, headers=h)
     assert r.status_code == 400 and r.json()["error"]["code"] == "bad_request"
+
+
+async def test_calibration_clipped_reference_400_no_version(client, app_token):
+    h = bearer(app_token)
+    await client.put("/api/v1/nodes/n1", json={"esphome_name": "mic-a"}, headers=h)
+    files, data = _cal_form(ref_gain=20.0)
+    r = await client.post("/api/v1/nodes/n1/calibrations", files=files, data=data, headers=h)
+    assert r.status_code == 400
+    err = r.json()["error"]
+    assert err["code"] == "clipped" and "reference" in err["message"]
+    assert (await client.get("/api/v1/nodes/n1/calibrations", headers=h)).json() == []
+
+
+async def test_calibration_node_without_lead_in_400(client, app_token):
+    h = bearer(app_token)
+    await client.put("/api/v1/nodes/n1", json={"esphome_name": "mic-a"}, headers=h)
+    files, data = _cal_form()
+    rate, x = wavfile.read(io.BytesIO(files["node"][1]))
+    buf = io.BytesIO()
+    wavfile.write(buf, rate, x[int(0.55 * rate):])  # the sweep starts after 0.05 s
+    files["node"] = ("node.wav", buf.getvalue(), "audio/wav")
+    r = await client.post("/api/v1/nodes/n1/calibrations", files=files, data=data, headers=h)
+    assert r.status_code == 400
+    err = r.json()["error"]
+    assert err["code"] == "no_signal" and "node" in err["message"]
+    assert (await client.get("/api/v1/nodes/n1/calibrations", headers=h)).json() == []

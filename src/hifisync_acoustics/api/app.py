@@ -42,6 +42,7 @@ from hifisync_acoustics.analysis.calibration import (
     read_minidsp_cal,
 )
 from hifisync_acoustics.analysis.ir import impulse_response
+from hifisync_acoustics.analysis.preflight import preflight
 from hifisync_acoustics.analysis.response import frequency_response
 from hifisync_acoustics.analysis.sweep import SweepSpec, generate_sweep
 from hifisync_acoustics.api import auth
@@ -556,9 +557,16 @@ def create_app(store: Store, *, analyse_inline: bool = False,
 
 
 def _calibrate(paths: dict[str, Path], spec: SweepSpec):
+    """Correction curve and 1 kHz offset; both recordings must pass pre-flight first."""
     sweep = generate_sweep(spec)
-    node_fr, ref_fr = (frequency_response(impulse_response(read_wav(paths[f]), sweep), 1 / 6)
-                       for f in ("node", "reference"))
+    frs = {}
+    for f in ("node", "reference"):
+        rec = read_wav(paths[f])
+        pre = preflight(rec, sweep)
+        if not pre.ok:
+            raise RecordingError(pre.code, f"the {f} recording failed pre-flight: {pre.code}")
+        frs[f] = frequency_response(impulse_response(rec, sweep), 1 / 6)
+    node_fr, ref_fr = frs["node"], frs["reference"]
     ref_cal = read_minidsp_cal(paths["reference_cal"])
     curve = node_correction(node_fr, ref_fr, ref_cal)
     offset = broadband_offset_db(curve)

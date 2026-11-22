@@ -43,7 +43,7 @@ hifisync-acoustics token revoke NAME
 
 | Status | Codes |
 | --- | --- |
-| 400 | `bad_request`, `token_in_url`, `unknown_room`; a recording error code for a calibration upload (`unsupported_format`, `rate_mismatch`, `too_short`, `bad_calibration`, `no_signal`) |
+| 400 | `bad_request`, `token_in_url`, `unknown_room`; a recording error code for a calibration upload (`unsupported_format`, `rate_mismatch`, `too_short`, `bad_calibration`, `clipped`, `no_signal`) |
 | 401 | `unauthorized` |
 | 404 | `not_found` |
 | 409 | `managed_by_ha`, `session_not_accepting` |
@@ -101,6 +101,9 @@ Coordinates and room axes follow [coordinates.md](coordinates.md): `width_m` is 
   The engine computes both frequency responses at 1/6-octave smoothing. The correction is
   `reference + reference_cal − node`, and `offset_db` is its value at 1 kHz. The answer is 201
   `{"version", "offset_db"}`. An unusable file answers 400 with its recording error code.
+  Both recordings must pass the pre-flight check, as session recordings do; one that fails
+  answers 400 `clipped` or `no_signal`, the message names `node` or `reference`, and no
+  calibration version is stored.
 
 ### Sessions
 
