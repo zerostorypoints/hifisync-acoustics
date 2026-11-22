@@ -21,13 +21,13 @@ jobs:
       - uses: astral-sh/setup-uv@v5
         with:
           python-version: "3.13"
+      # Cache only the toolchain and framework downloads. A cached .esphome/build keeps a CMake
+      # cache that points at the previous run's ninja under a temporary uv directory, which no
+      # longer exists, and the next compile fails.
       - uses: actions/cache@v4
         with:
-          path: |
-            ~/.platformio
-            esphome/examples/.esphome
-          key: esphome-2026.9.1-${{ hashFiles('esphome/examples/capture-node*.yaml') }}
-          restore-keys: esphome-2026.9.1-
+          path: ~/.cache/esphome
+          key: esphome-idf-2026.9.1
       - run: cp esphome/examples/secrets.example.yaml esphome/examples/secrets.yaml
       - run: uvx esphome@2026.9.1 compile esphome/examples/capture-node.yaml
       - run: uvx esphome@2026.9.1 compile esphome/examples/capture-node-stereo.yaml
