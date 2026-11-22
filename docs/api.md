@@ -11,7 +11,7 @@ by a stopped process become `failed` with the reason `interrupted`.
 
 ## Discovery
 
-The engine advertises `_hifisync-acoustics._tcp.local.` over zeroconf. The instance name holds
+The engine advertises `_hfs-acoustics._tcp.local.` over zeroconf (the service name is shortened because mDNS allows at most 15 bytes). The instance name holds
 the host name, and the TXT record is `api=1` and `version=<engine version>`. It does not
 advertise when it listens on a loopback address or when started with `--no-zeroconf`.
 

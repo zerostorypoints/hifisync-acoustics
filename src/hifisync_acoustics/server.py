@@ -28,7 +28,7 @@ async def _serve(store: Store, host: str, port: int, zeroconf: bool) -> None:
         from hifisync_acoustics.discovery import advertise
 
         azc = await advertise(port)
-        log.info("advertising _hifisync-acoustics._tcp on port %d", port)
+        log.info("advertising _hfs-acoustics._tcp on port %d", port)
     try:
         await server.serve()
     finally:
