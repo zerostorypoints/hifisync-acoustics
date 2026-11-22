@@ -322,9 +322,8 @@ def create_app(store: Store, *, analyse_inline: bool = False,
         body = await _json_object(request)
         room = store.upsert_room(
             room_id, _text(body.get("name"), "name"),
-            width_m=_number(body.get("width_m"), "width_m", positive=True),
-            length_m=_number(body.get("length_m"), "length_m", positive=True),
-            height_m=_number(body.get("height_m"), "height_m", positive=True),
+            **{k: None if body.get(k) is None else _number(body[k], k, positive=True)
+               for k in ("width_m", "length_m", "height_m")},
             snapshot=body.get("snapshot"))
         return JSONResponse(room)
 

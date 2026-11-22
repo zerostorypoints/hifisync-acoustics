@@ -109,9 +109,11 @@ class Store:
 
     # rooms ---------------------------------------------------------------
 
-    def upsert_room(self, room_id: str | None, name: str, *, width_m: float, length_m: float,
-                    height_m: float, snapshot: Any = None) -> dict[str, Any]:
-        """``width_m`` is x, ``length_m`` is y, ``height_m`` is z (docs/coordinates.md)."""
+    def upsert_room(self, room_id: str | None, name: str, *, width_m: float | None = None,
+                    length_m: float | None = None, height_m: float | None = None,
+                    snapshot: Any = None) -> dict[str, Any]:
+        """``width_m`` is x, ``length_m`` is y, ``height_m`` is z (docs/coordinates.md).
+        A dimension may be None (unknown)."""
         room_id = room_id or _uuid()
         snap = None if snapshot is None else json.dumps(snapshot)
         with self._write() as con:

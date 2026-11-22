@@ -125,8 +125,9 @@ def _analyse_points(store: Store, session: dict) -> None:
     spec = SweepSpec(**session["sweep"])
     sweep = generate_sweep(spec)
     room = store.get_room(session["room_id"])
-    dims = None
-    if room and min(room["length_m"], room["width_m"], room["height_m"]) > 0:
+    dims = None  # modes and the Schroeder frequency need all three dimensions
+    sizes = [room[k] for k in ("length_m", "width_m", "height_m")] if room else [None]
+    if all(v is not None and v > 0 for v in sizes):
         dims = RoomDimensions(length_m=room["length_m"], width_m=room["width_m"],
                               height_m=room["height_m"])
     for point in session["points"]:

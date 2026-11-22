@@ -70,8 +70,10 @@ Coordinates and room axes follow [coordinates.md](coordinates.md): `width_m` is 
 - `GET /rooms` lists the rooms.
 - `GET /rooms/{id}` returns a room.
 - `PUT /rooms/{id}` creates or replaces a room. The body is
-  `{"name", "width_m", "length_m", "height_m", "snapshot"?}`, with dimensions greater than 0.
-  `snapshot` is any JSON and is stored as it is.
+  `{"name", "width_m"?, "length_m"?, "height_m"?, "snapshot"?}`. A dimension may be missing
+  or `null` (unknown); a given dimension must be greater than 0. A room can be measured
+  without dimensions; mode assignment and the Schroeder frequency need all three, and
+  without them `schroeder_hz` is `null`. `snapshot` is any JSON and is stored as it is.
 - `GET /rooms/{id}/points` lists the points of a room.
 - `POST /rooms/{id}/points` adds a point. The body is `{"label", "x", "y", "z"}` and the answer
   is 201 with the point and its `id`.

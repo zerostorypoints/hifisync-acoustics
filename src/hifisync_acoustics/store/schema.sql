@@ -1,11 +1,11 @@
 -- Schema version 1. Coordinates: see docs/coordinates.md.
--- rooms: width_m is x, length_m is y, height_m is z.
+-- rooms: width_m is x, length_m is y, height_m is z. Dimensions are optional (NULL).
 CREATE TABLE rooms (
     id            TEXT PRIMARY KEY,
     name          TEXT NOT NULL,
-    length_m      REAL NOT NULL,
-    width_m       REAL NOT NULL,
-    height_m      REAL NOT NULL,
+    length_m      REAL,
+    width_m       REAL,
+    height_m      REAL,
     snapshot_json TEXT,
     updated_at    TEXT NOT NULL
 );

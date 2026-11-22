@@ -173,8 +173,11 @@ async def test_sweep_wav_peak_minus_12(client, app_token):
 async def test_room_validation_and_404(client, app_token):
     h = bearer(app_token)
     assert (await client.get("/api/v1/rooms/missing", headers=h)).status_code == 404
-    r = await client.put("/api/v1/rooms/r", json={"name": "x"}, headers=h)
+    r = await client.put("/api/v1/rooms/r", json={"width_m": 4.0}, headers=h)
     assert r.status_code == 400 and r.json()["error"]["code"] == "bad_request"
+    for bad in ({"width_m": 0}, {"height_m": -2.5}, {"length_m": "5"}, {"width_m": True}):
+        r = await client.put("/api/v1/rooms/r", json={"name": "x", **bad}, headers=h)
+        assert r.status_code == 400, bad
     r = await client.put("/api/v1/rooms/r", content=b"{not json", headers=h)
     assert r.status_code == 400
     r = await client.put("/api/v1/rooms/r", json={**ROOM, "width_m": -1}, headers=h)
@@ -313,3 +316,29 @@ async def test_calibration_node_without_lead_in_400(client, app_token):
     err = r.json()["error"]
     assert err["code"] == "no_signal" and "node" in err["message"]
     assert (await client.get("/api/v1/nodes/n1/calibrations", headers=h)).json() == []
+
+
+async def test_room_without_dimensions_measures(client, app_token):
+    h = bearer(app_token)
+    r = await client.put("/api/v1/rooms/hall", json={"name": "Hall"}, headers=h)
+    assert r.status_code == 200, r.text
+    assert (r.json()["width_m"], r.json()["length_m"], r.json()["height_m"]) == (None,) * 3
+    r = await client.put("/api/v1/rooms/hall",
+                         json={"name": "Hall", "width_m": None, "length_m": 5.0}, headers=h)
+    assert r.status_code == 200 and r.json()["length_m"] == 5.0 and r.json()["width_m"] is None
+    p = (await client.post("/api/v1/rooms/hall/points",
+                           json={"label": "Door", "x": 0.5, "y": 0.5, "z": 1.2}, headers=h)).json()
+    await client.put("/api/v1/nodes/n1", json={"esphome_name": "mic-n1"}, headers=h)
+    r = await client.post("/api/v1/sessions", headers=h, json={
+        "room_id": "hall", "sweep": {"duration_s": 2.0, "repeats": 1},
+        "assignments": [{"point_id": p["id"], "node_id": "n1"}]})
+    assert r.status_code == 201, r.text
+    sid = r.json()["id"]
+    r = await _upload(client, app_token, sid, "n1", wav_bytes())
+    assert r.json()["session_state"] == "analysing"
+    body = (await client.get(f"/api/v1/sessions/{sid}/results", headers=h)).json()
+    point = body["points"][0]
+    assert body["state"] == "done" and point["state"] == "done", point
+    result = point["result"]
+    assert result["fr"]["freqs_hz"] and result["decay"] and result["peaks"]
+    assert result["schroeder_hz"] is None
