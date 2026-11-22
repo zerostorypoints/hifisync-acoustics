@@ -143,25 +143,36 @@ void AcousticsCaptureComponent::worker_task_(void *arg) {
 }
 
 void AcousticsCaptureComponent::worker_loop_() {
+  bool registered = false;
   uint8_t attempt = 0;
-  while (true) {
-    if (network::is_connected() && core::register_then_poll(this->self_report_()))
-      break;
-    this->set_state_(CaptureState::ERROR);
-    task_delay_ms(core::backoff_ms(attempt));
-    if (attempt < UINT8_MAX)
-      attempt++;
-  }
-  this->set_state_(CaptureState::IDLE);
-
-  attempt = 0;
   while (true) {
     if (!network::is_connected()) {
       task_delay_ms(1000);
       continue;
     }
+    if (!registered) {
+      const int status = this->self_report_();
+      if (!core::register_then_poll(status)) {
+        this->set_state_(CaptureState::ERROR);
+        task_delay_ms(core::backoff_ms(attempt));
+        if (attempt < UINT8_MAX)
+          attempt++;
+        continue;
+      }
+      // The back-off is reset by the next successful poll, so a node the engine keeps answering
+      // 404 re-registers at a growing interval.
+      registered = true;
+      if (status == 200)
+        this->set_state_(CaptureState::IDLE);
+    }
     Command command;
     const int got = this->poll_(command);
+    if (got == POLL_UNKNOWN_NODE) {
+      // The engine lost the node, for example after its record was deleted: register again
+      // before the next poll.
+      ESP_LOGW(TAG, "The engine does not know node %s; registering again", this->node_id_.c_str());
+      registered = false;
+    }
     if (got < 0) {
       this->set_state_(CaptureState::ERROR);
       task_delay_ms(core::backoff_ms(attempt));
@@ -209,6 +220,8 @@ int AcousticsCaptureComponent::poll_(Command &command) {
                                     &response);
   if (status == 204)
     return 0;
+  if (status == 404)
+    return POLL_UNKNOWN_NODE;
   if (status != 200) {
     ESP_LOGW(TAG, "Poll failed: HTTP %d", status);
     return -1;

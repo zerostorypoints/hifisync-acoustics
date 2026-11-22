@@ -638,6 +638,7 @@ def create_app(store: Store, *, analyse_inline: bool = False,
         if not MIN_POLL_WAIT_S <= wait <= MAX_POLL_WAIT_S:
             raise ApiError(400, "bad_request", f"wait must be an integer from "
                            f"{MIN_POLL_WAIT_S} to {MAX_POLL_WAIT_S}")
+        node_or_404(node_id)  # the node registers again on 404
         loop = asyncio.get_running_loop()
         deadline = loop.time() + wait
         generation = poll_generations.get(node_id, 0) + 1

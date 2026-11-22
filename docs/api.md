@@ -218,6 +218,8 @@ in the URL. Every request it makes on its own node sets the node's `last_seen_at
    from 1 to 30 seconds, default 25; another value answers 400 `bad_request`. The engine
    holds the request until a command is available or `wait` seconds pass:
    - 204 with no body: no command. Poll again at once.
+   - 404 `not_found`: the engine does not know the node, for example because its record is
+     gone. Register again (step 1), then poll.
    - 200 with a command, which is now `taken`:
 
      ```json

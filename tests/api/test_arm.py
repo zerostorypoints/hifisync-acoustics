@@ -125,6 +125,18 @@ async def test_wait_out_of_range(client, node_a):
         assert r.json()["error"]["code"] == "bad_request"
 
 
+async def test_poll_of_unknown_node_is_404(client, node_a):
+    """A node the engine does not know (never registered, or lost) is told so, and registers
+    again."""
+    r = await _poll(client, node_a, "node-a")
+    assert r.status_code == 404
+    assert r.json()["error"]["code"] == "not_found"
+    r = await client.put("/api/v1/nodes/node-a", json={"esphome_name": "node-a"},
+                         headers=bearer(node_a))
+    assert r.status_code == 200
+    assert (await _poll(client, node_a, "node-a")).status_code == 204
+
+
 async def test_poll_other_node_forbidden(client, node_a):
     r = await _poll(client, node_a, "node-b")
     assert r.status_code == 403

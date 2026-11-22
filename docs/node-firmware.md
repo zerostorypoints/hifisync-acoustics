@@ -87,7 +87,8 @@ version. That is enough to create the node. Its room and install position are se
 - It registers. A network error, 401, 403 or a 5xx answer is retried with back-off (1, 2, 4 …
   30 s). Another 4xx is logged and the node goes on to polling.
 - It then polls `GET /api/v1/nodes/{node_id}/commands/next?wait=<poll_wait>`. A 204 polls
-  again at once; a network error or another status backs off.
+  again at once. A 404 means the engine does not know the node: it backs off and registers
+  again before the next poll. A network error or another status backs off.
 - For a `record` command it checks `capture_s` against `max_capture`, checks the microphone
   is running, allocates the buffer in PSRAM, acks `recording` and only then starts copying
   samples. The microphone callback only copies into the buffer and stops when it is full. If

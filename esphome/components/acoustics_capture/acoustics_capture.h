@@ -54,7 +54,9 @@ class AcousticsCaptureComponent : public Component {
   void worker_loop_();
   // Registers the node; returns the HTTP status, or -1 for a network error.
   int self_report_();
-  // Returns 1 for a command, 0 for no command (204), -1 for an error (the caller backs off).
+  // Returns 1 for a command, 0 for no command (204), POLL_UNKNOWN_NODE for 404 (the caller registers
+  // again) and -1 for another error (the caller backs off).
+  static constexpr int POLL_UNKNOWN_NODE = -2;
   int poll_(Command &command);
   void handle_command_(const Command &command);
   // Returns the HTTP status, or -1 for a network error.
