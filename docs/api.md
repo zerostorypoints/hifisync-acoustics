@@ -378,7 +378,7 @@ it is not stored. Once no point is pending, the session is analysed as usual, or
 ```
 hifisync-acoustics measure --url http://host:8765 --room living \
     --assign POINT_ID=node-a [--assign POINT_ID=node-b ...] \
-    [--duration 6] [--repeats 1] [--start-window 10] [--play "afplay {file}" | --upnp RENDERER] [--yes]
+    [--duration 6] [--repeats 1] [--sources left,right] [--start-window 10] [--play "afplay {file}" | --upnp RENDERER] [--yes]
 ```
 
 The token (role `app` or `ha`) comes from the environment variable
@@ -406,7 +406,30 @@ already exist.
    prints the file path and the seconds left in the start window.
 5. Polls until the session is `done` or `failed`, then prints one line per point: state,
    failure, T30 at 500 Hz and 1 kHz and the strongest peak below 200 Hz. The temporary file
-   is removed.
+   is removed. With `--sources`, indented lines follow (see below).
+
+`--sources` names the loudspeakers in measuring order (`both`, `left`, `right`; default
+`both`). It goes into the session's `sweep` and the `sweep.wav` URL, so `--play` and `--upnp`
+play the stereo file. Before creating the session the CLI works out the capture length and
+exits 2 with "capture over 60 s: fewer repeats or a shorter sweep" when it is over the
+limit; each source multiplies the sweeps, for example `--sources left,right --repeats 2`
+with a 6 s sweep records 1 + 4 × 6 + 3 × 2 = 31 s plus the start window and a 3 s tail.
+
+With `left` and `right` measured, each point prints, after its line:
+
+```
+  L-R arrival +0.50 ms | direct L-R 1k -0.4 dB 4k -3.0 dB
+  left reflections: +3.0 ms -6.0 dB, +7.5 ms -11.2 dB
+  right reflections: +4.1 ms -9.8 dB
+```
+
+The arrival difference is positive when the left loudspeaker arrives later; the level
+differences are left minus right, per octave, on the direct sound. With one repeat per source
+the line ends in "(no drift correction: use --repeats 2 or more)": the node's clock error can
+then move the arrival difference by about 0.4 ms at 50 ppm. The reflections are the two
+strongest per source (delay and level relative to the direct sound). For a two-channel node,
+one more line per source gives `ITD -250 us IACC_E 0.42`; the ITD is left out for `both`,
+where it is not meaningful.
 
 Exit codes: 0 when every point is `done`, 1 when a point or the session failed or a wait ran
 out, 2 for usage errors, a missing token, a connection error or an API rejection (for

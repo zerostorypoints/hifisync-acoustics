@@ -32,6 +32,10 @@ hifisync-acoustics measure --url http://localhost:8765 --room living \
 It arms the node, plays the sweep and prints a summary per point. `docs/api.md` describes
 the flow and the exit codes.
 
+To check the stereo image, add `--sources left,right --repeats 2`: the left and right
+loudspeakers play in turn, and the summary adds the left-right arrival and level difference
+and the strongest early reflections of each side (plus ITD and IACC for a two-channel node).
+
 ## Measurement nodes
 
 `esphome/components/acoustics_capture` is an ESPHome component that makes an ESP32 with

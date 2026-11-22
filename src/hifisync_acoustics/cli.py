@@ -13,22 +13,33 @@ from scipy.io import wavfile
 
 from hifisync_acoustics.analysis.calibration import read_minidsp_cal
 from hifisync_acoustics.analysis.modes import RoomDimensions
-from hifisync_acoustics.analysis.sweep import SweepSpec, generate_sweep
+from hifisync_acoustics.analysis.sweep import SweepSpec, generate_sweep, render_sequence
 from hifisync_acoustics.report import analyse_recording
 from hifisync_acoustics.rew import compare_case
 from hifisync_acoustics.wav import RecordingError, read_wav
 
 
+def _spec(args) -> SweepSpec:
+    from hifisync_acoustics.client import parse_sources
+
+    try:
+        return SweepSpec(duration_s=args.duration, repeats=args.repeats,
+                         sources=parse_sources(args.sources))
+    except ValueError as exc:
+        raise SystemExit(f"error: bad --sources: {exc}") from exc
+
+
 def _cmd_sweep(args) -> int:
-    sweep = generate_sweep(SweepSpec(duration_s=args.duration, repeats=args.repeats))
-    wavfile.write(args.out, sweep.spec.sample_rate, sweep.signal.astype(np.float32))
+    spec = _spec(args)
+    signal = render_sequence(spec)
+    wavfile.write(args.out, spec.sample_rate, signal.astype(np.float32))
     print(f"wrote {args.out}")
     print("ok")
     return 0
 
 
 def _cmd_analyse(args) -> int:
-    sweep = generate_sweep(SweepSpec(duration_s=args.duration, repeats=args.repeats))
+    sweep = generate_sweep(_spec(args))
     dims = RoomDimensions(*args.dims) if args.dims else None
     cal = read_minidsp_cal(args.cal) if args.cal else None
     res = analyse_recording(read_wav(args.recording), sweep, dims, cal)
@@ -125,6 +136,8 @@ def _parser() -> argparse.ArgumentParser:
     s.add_argument("--out", required=True)
     s.add_argument("--duration", type=float, default=6.0)
     s.add_argument("--repeats", type=int, default=1)
+    s.add_argument("--sources", help="loudspeakers that play, in order: both (default), "
+                     "left, right; for example left,right")
     s.set_defaults(func=_cmd_sweep)
 
     a = sub.add_parser("analyse", help="analyse a recording of the sweep")
@@ -134,6 +147,8 @@ def _parser() -> argparse.ArgumentParser:
     a.add_argument("--json", help="write the full result as JSON")
     a.add_argument("--duration", type=float, default=6.0, help="sweep duration used when recording")
     a.add_argument("--repeats", type=int, default=1, help="sweep repeats used when recording")
+    a.add_argument("--sources", help="loudspeakers that play, in order: both (default), "
+                     "left, right; for example left,right")
     a.set_defaults(func=_cmd_analyse)
 
     c = sub.add_parser("compare-rew", help="compare the engine with REW exports of one case")
@@ -150,6 +165,8 @@ def _parser() -> argparse.ArgumentParser:
                    metavar="POINT=NODE", help="point id and node id; repeat for more points")
     m.add_argument("--duration", type=float, default=6.0)
     m.add_argument("--repeats", type=int, default=1)
+    m.add_argument("--sources", help="loudspeakers that play, in order: both (default), "
+                     "left, right; for example left,right")
     m.add_argument("--start-window", type=float, default=10.0,
                    help="seconds to start playback once the nodes record (0-30)")
     m.add_argument("--play", help='player command, "{file}" is the sweep, e.g. "afplay {file}"')
