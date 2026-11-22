@@ -78,7 +78,7 @@ A point of a session fails with one of these codes in its `failure` field:
 | `clipped`, `no_signal` | the recording fails the pre-flight check in analysis |
 | `analysis_error` | analysis of the point failed |
 | `node_offline` | the node's command expired; `failure_detail` names the stage: `never polled`, `no recording ack` or `no upload` |
-| `node_failed` | the node acked `failed`; `failure_detail` is the node's `detail`, for example `no_memory` |
+| `node_failed` | the node acked `failed`; `failure_detail` is the node's `detail`, for example `no_memory` (the firmware's details are listed under [Node protocol](#node-protocol), step 3) |
 
 ## Routes
 
@@ -239,7 +239,15 @@ in the URL. Every request it makes on its own node sets the node's `last_seen_at
    - `{"state": "failed", "detail": "no_memory"}` if the node cannot record, for example
      because `capture_s` does not fit its memory. `detail` is optional, a string of at most
      200 characters. The point fails `node_failed` with that detail, and the command is
-     closed.
+     closed. The `acoustics_capture` firmware sends these details:
+
+     | Detail | Meaning |
+     | --- | --- |
+     | `no_memory` | `capture_s` is over the node's `max_capture`, or the buffer could not be allocated |
+     | `unsupported_kind` | the command's `kind` is not `record` |
+     | `bad_upload_path` | `upload_path` is not a plain absolute path on the engine |
+     | `microphone_not_running` | the microphone was stopped when the command arrived |
+     | `no_audio` | no sample arrived during the capture |
 
    The answer is 200 `{"id", "session_id", "state"}`. A command of another node or an
    unknown id answers 404 `not_found`. A command that is `done`, `failed` or `expired`
@@ -249,7 +257,8 @@ in the URL. Every request it makes on its own node sets the node's `last_seen_at
    `Content-Type: audio/wav` and `Content-Length` set (44-byte header + 2 bytes per sample).
    The answer is 200 `{"point_state", "failure", "detail", "session_state"}` (see
    `PUT /sessions/{id}/recordings/{node_id}`), and the command becomes `done`. On a network
-   error or 400 `incomplete_body`, send the whole upload again, a few times at most. 409
+   error, a 5xx answer or 400 `incomplete_body`, send the whole upload again, a few times at
+   most; the `acoustics_capture` firmware retries 3 times with a 1, 2 and 4 s back-off. 409
    `session_not_accepting` means the session is over: drop the recording.
 5. Go back to polling.
 
