@@ -31,9 +31,12 @@ hifisync-acoustics token revoke NAME
   name of that node belong to Home Assistant, and an `app` token that changes them gets 409
   `managed_by_ha`. Role `app` is for every other client.
 - A token in the query string is refused with 400 `token_in_url`, on every route, whatever
-  the parameter is called.
+  the parameter is called. The check is by shape: a token-named parameter (`token`,
+  `access_token` and the like) or any run of 43 URL-safe base64 characters in the query
+  string, raw or percent-decoded.
 - Neither the request log nor error bodies contain tokens. The log has method, path (without
-  the query string), status and duration.
+  the query string, and with token-shaped segments written as `<redacted>`), status and
+  duration.
 
 ## Errors
 
