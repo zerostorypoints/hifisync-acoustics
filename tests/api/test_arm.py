@@ -191,6 +191,21 @@ async def test_stale_poll_does_not_take_command(store, client, app_token, node_a
     assert a["id"] == r.json()["id"] and a["state"] == "taken"
 
 
+async def test_only_newest_poll_takes_command(store, client, app_token, node_a, sid):
+    """Two polls of the same node, neither disconnected: the older one (a dead connection
+    the engine cannot see) returns 204 and the newer one gets the command."""
+    older = asyncio.create_task(_poll(client, node_a, "node-a", wait=5))
+    await asyncio.sleep(0.1)
+    newer = asyncio.create_task(_poll(client, node_a, "node-a", wait=5))
+    await asyncio.sleep(0.1)
+    assert (await _arm(client, app_token, sid)).status_code == 200
+    r_old, r_new = await asyncio.wait_for(asyncio.gather(older, newer), 3)
+    assert r_old.status_code == 204
+    assert r_new.status_code == 200, r_new.text
+    a = next(c for c in store.list_commands(sid) if c["node_id"] == "node-a")
+    assert a["id"] == r_new.json()["id"] and a["state"] == "taken"
+
+
 async def test_ready_after_all_ack(client, app_token, node_a, node_b, sid):
     await _arm(client, app_token, sid)
     for node, token in (("node-a", node_a), ("node-b", node_b)):

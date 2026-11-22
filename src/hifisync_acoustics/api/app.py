@@ -296,6 +296,9 @@ def create_app(store: Store, *, analyse_inline: bool = False,
     # One event per node that long-polls; arming sets it. Pollers read the database only
     # when woken or at the start, and hold no connection while they wait.
     node_events: dict[str, asyncio.Event] = {}
+    # Each poll of a node takes the next generation; only the newest poll may take a command,
+    # so a poll on a dead connection that the engine cannot detect leaves it for the next one.
+    poll_generations: dict[str, int] = {}
     tmp_root = store.data_dir / "tmp"
     tmp_root.mkdir(parents=True, exist_ok=True)
 
@@ -635,13 +638,18 @@ def create_app(store: Store, *, analyse_inline: bool = False,
                            f"{MIN_POLL_WAIT_S} to {MAX_POLL_WAIT_S}")
         loop = asyncio.get_running_loop()
         deadline = loop.time() + wait
+        generation = poll_generations.get(node_id, 0) + 1
+        poll_generations[node_id] = generation
+        # Wake an older poll of the node so it returns now instead of holding its connection.
+        node_event(node_id).set()
         while True:
             event = node_event(node_id)
             event.clear()
             await expire_commands()
             # Starlette does not cancel a handler whose client left. A stale poll must not
-            # take the command that the node's live poll is waiting for.
-            if await request.is_disconnected():
+            # take the command that the node's live poll is waiting for: neither one whose
+            # client disconnected nor one that a newer poll of the node has replaced.
+            if poll_generations.get(node_id) != generation or await request.is_disconnected():
                 return Response(status_code=204)
             cmd = commands.next_for(store, node_id)
             if cmd is not None:
