@@ -313,7 +313,7 @@ def test_sources_sent_and_summary_printed(setup, stereo_node, monkeypatch, capsy
         return real(method, url, headers, body)
 
     monkeypatch.setattr(measure_client, "http_request", spy)
-    args = _args(setup, "--sources", "left,right")
+    args = _args(setup, "--sources", "left,right", "--repeats", "1")
     args[args.index("2")] = "3"  # the recording is of 3 s sweeps
     assert main(args) == 0
     posted = next(b for m, u, b in seen if m == "POST" and u.endswith("/sessions"))
@@ -366,3 +366,44 @@ def test_two_strongest_reflections_only():
     r = _stereo_result(sources={"left": {"reflections": refl}})
     (line,) = [x for x in measure_client._stereo_lines(r) if "reflections" in x]
     assert "+1.0 ms -1.0 dB" in line and "+2.0 ms" in line and "+3.0 ms" not in line
+
+
+def test_default_session_prints_one_line_per_point(setup, node, capsys):
+    assert main(_args(setup)) == 0
+    out = capsys.readouterr().out
+    assert not [x for x in out.splitlines() if x.startswith("  ")]
+    assert "reflections" not in out and "IACC_E" not in out
+
+
+def test_sources_default_repeats_to_2(setup, stereo_node, monkeypatch):
+    seen = []
+    real = measure_client.http_request
+
+    def spy(method, url, headers, body):
+        seen.append((method, url, body))
+        return real(method, url, headers, body)
+
+    monkeypatch.setattr(measure_client, "http_request", spy)
+    args = _args(setup, "--sources", "left,right")
+    args[args.index("2")] = "3"
+    main(args)  # the fake node records one repeat, so the point fails; the request is what counts
+    posted = next(b for m, u, b in seen if m == "POST" and u.endswith("/sessions"))
+    assert json.loads(posted)["sweep"]["repeats"] == 2
+
+
+def test_explicit_repeats_1_with_sources_is_kept(setup, monkeypatch):
+    from hifisync_acoustics.cli import _parser
+    ns = _parser().parse_args(_args(setup, "--sources", "left,right", "--repeats", "1"))
+    assert measure_client._sweep_spec(ns).repeats == 1
+    ns = _parser().parse_args(_args(setup))
+    assert measure_client._sweep_spec(ns).repeats == 1
+
+
+@pytest.mark.parametrize("cmd", ["sweep", "analyse"])
+def test_bad_sources_exit_2_for_sweep_and_analyse(cmd, tmp_path, capsys):
+    argv = [cmd, "--sources", "left,left"]
+    argv += ["--out", str(tmp_path / "s.wav")] if cmd == "sweep" else ["rec.wav"]
+    with pytest.raises(SystemExit) as e:
+        main(argv)
+    assert e.value.code == 2
+    assert "sources" in capsys.readouterr().err

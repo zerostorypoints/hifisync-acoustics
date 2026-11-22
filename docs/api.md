@@ -243,6 +243,8 @@ reaches `recording` with its first upload or when it is armed.
       `{"third_octave": {"100": …, …, "10000": …}, "octave": {"125": …, …, "8000": …}}`.
       The direct window is the first 5 ms after each direct peak (a half-Hann fall from the
       peak, with a 0.5 ms half-Hann rise before it); the steady window is the whole response.
+      Third-octave bands below about 200 Hz from the direct window are not meaningful: 5 ms
+      is too short to resolve them.
   - `binaural`, only for a 2-channel recording (a binaural head): `{source: {itd_us, ild_db,
     iacc_e, iacc_l, iacc_a, channels}}`, one entry per source. Channel 0 is the left ear and
     channel 1 the right ear, in the order the node records them; `channels` says so:
@@ -276,7 +278,11 @@ reaches `recording` with its first upload or when it is armed.
   `preflight: no_signal (source both, channel 1)`.
   When a source is silent and the order of the sweeps found cannot tell which one it is
   (for example a silent first source with room left after the last sweep), the point fails
-  `no_signal` with a detail saying so; it is never reported as the other source. A
+  `no_signal` with a detail saying so. A silent source is never reported as the other one
+  when the recording starts before the file's first sweep; the `measure` CLI arms the nodes
+  before it plays, so this holds there. A recording that starts late inside the start
+  window (playback already under way) can mislabel a silent source (with one repeat) or
+  leave it unnamed ("cannot tell which source is missing"). A
   recording that ends before the last source's sweep fails `too_short`.
 - `GET /sessions/{id}/export` returns a ZIP with `session.json`, `recordings/<node>.wav` and
   `results/<point>.json`.
@@ -378,7 +384,7 @@ it is not stored. Once no point is pending, the session is analysed as usual, or
 ```
 hifisync-acoustics measure --url http://host:8765 --room living \
     --assign POINT_ID=node-a [--assign POINT_ID=node-b ...] \
-    [--duration 6] [--repeats 1] [--sources left,right] [--start-window 10] [--play "afplay {file}" | --upnp RENDERER] [--yes]
+    [--duration 6] [--repeats 1|2] [--sources left,right] [--start-window 10] [--play "afplay {file}" | --upnp RENDERER] [--yes]
 ```
 
 The token (role `app` or `ha`) comes from the environment variable
@@ -408,6 +414,9 @@ already exist.
    failure, T30 at 500 Hz and 1 kHz and the strongest peak below 200 Hz. The temporary file
    is removed. With `--sources`, indented lines follow (see below).
 
+`--repeats` defaults to 1, or to 2 when `--sources` is given, so the node's clock error is
+fitted; pass `--repeats 1` explicitly to keep one.
+
 `--sources` names the loudspeakers in measuring order (`both`, `left`, `right`; default
 `both`). It goes into the session's `sweep` and the `sweep.wav` URL, so `--play` and `--upnp`
 play the stereo file. Before creating the session the CLI works out the capture length and
@@ -434,3 +443,10 @@ where it is not meaningful.
 Exit codes: 0 when every point is `done`, 1 when a point or the session failed or a wait ran
 out, 2 for usage errors, a missing token, a connection error or an API rejection (for
 example `capture_too_long`).
+
+## CLI: `sweep`
+
+`hifisync-acoustics sweep --out FILE [--duration 6] [--repeats 1] [--sources left,right]`
+writes the same file as `GET /sweep.wav`, including its 1.0 s of leading silence (the
+lead-in that pre-flight needs, so a recording of the file can be analysed with
+`hifisync-acoustics analyse`). A bad `--sources` exits 2 for `sweep` and `analyse`.

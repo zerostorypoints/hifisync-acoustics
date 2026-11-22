@@ -26,7 +26,8 @@ def _spec(args) -> SweepSpec:
         return SweepSpec(duration_s=args.duration, repeats=args.repeats,
                          sources=parse_sources(args.sources))
     except ValueError as exc:
-        raise SystemExit(f"error: bad --sources: {exc}") from exc
+        print(f"error: bad --sources: {exc}", file=sys.stderr)
+        raise SystemExit(2) from exc
 
 
 def _cmd_sweep(args) -> int:
@@ -164,7 +165,8 @@ def _parser() -> argparse.ArgumentParser:
     m.add_argument("--assign", required=True, action="append", type=_assign,
                    metavar="POINT=NODE", help="point id and node id; repeat for more points")
     m.add_argument("--duration", type=float, default=6.0)
-    m.add_argument("--repeats", type=int, default=1)
+    m.add_argument("--repeats", type=int, default=None,
+                   help="sweep repeats (default 1; 2 with --sources, so the clock is fitted)")
     m.add_argument("--sources", help="loudspeakers that play, in order: both (default), "
                      "left, right; for example left,right")
     m.add_argument("--start-window", type=float, default=10.0,

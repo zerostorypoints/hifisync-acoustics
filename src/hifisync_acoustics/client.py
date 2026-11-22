@@ -199,6 +199,8 @@ def parse_sources(raw: str | None) -> tuple[str, ...]:
 
 def _sweep_spec(args) -> SweepSpec:
     """The sweep the command asks for, checked before anything is created."""
+    if getattr(args, "repeats", None) is None:
+        args.repeats = 2 if getattr(args, "sources", None) else 1
     try:
         spec = SweepSpec(duration_s=args.duration, repeats=args.repeats,
                          sources=parse_sources(getattr(args, "sources", None)))
@@ -353,8 +355,9 @@ def run_measure(args, out: Callable[[str], None] = print,
     for p in final["points"]:
         r = results.get(p["point_id"], {})
         out(_summary_line(p, r.get("result")))
-        for line in _stereo_lines(r.get("result") or {}):
-            out(line)
+        if spec.sources != ("both",):
+            for line in _stereo_lines(r.get("result") or {}):
+                out(line)
         ok = ok and p["state"] == "done"
     if final.get("failure"):
         out(f"session failed: {final['failure']}")
