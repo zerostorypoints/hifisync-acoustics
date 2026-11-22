@@ -10,8 +10,13 @@ readme = "README.md"
 requires-python = ">=3.13"
 license = { text = "Apache-2.0" }
 dependencies = [
+    "ifaddr>=0.2.0",
     "numpy>=2.3",
+    "python-multipart>=0.0.34",
     "scipy>=1.16",
+    "starlette>=1.10.0",
+    "uvicorn>=0.54.0",
+    "zeroconf>=0.154.0",
 ]
 
 [project.scripts]

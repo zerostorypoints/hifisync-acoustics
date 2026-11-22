@@ -1,9 +1,10 @@
-"""Command line: generate a sweep, analyse a recording, compare with REW."""
+"""Command line: sweeps, analysis, REW comparison, the service and its tokens."""
 
 from __future__ import annotations
 
 import argparse
 import json
+import os
 import sys
 from pathlib import Path
 
@@ -58,6 +59,50 @@ def _cmd_compare(args) -> int:
     return 0 if failed is None else 1
 
 
+DATA_ENV = "HIFISYNC_ACOUSTICS_DATA"
+
+
+def _data_dir(args) -> Path:
+    data = args.data or os.environ.get(DATA_ENV)
+    if not data:
+        raise SystemExit(f"error: --data is required (or set {DATA_ENV})")
+    return Path(data)
+
+
+def _cmd_serve(args) -> int:
+    from hifisync_acoustics.server import serve
+
+    serve(_data_dir(args), host=args.host, port=args.port, zeroconf=not args.no_zeroconf)
+    return 0
+
+
+def _cmd_token(args) -> int:
+    from hifisync_acoustics.api import auth
+    from hifisync_acoustics.store.db import Store
+
+    store = Store.open(_data_dir(args))
+    if args.token_command == "create":
+        try:
+            token = auth.issue(store, args.name, role=args.role)
+        except ValueError as exc:
+            print(f"error: {exc}", file=sys.stderr)
+            return 1
+        print(token)
+        print(f"created {args.role} token {args.name!r}; it is shown only this once",
+              file=sys.stderr)
+        return 0
+    if args.token_command == "list":
+        print("name role created revoked")
+        for t in store.list_tokens():
+            print(f"{t['name']} {t['role']} {t['created_at']} {t['revoked_at'] or '-'}")
+        return 0
+    if auth.revoke(store, args.name):
+        print(f"revoked {args.name!r}")
+        return 0
+    print(f"error: no active token named {args.name!r}", file=sys.stderr)
+    return 1
+
+
 def _parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(prog="hifisync-acoustics")
     sub = p.add_subparsers(dest="command", required=True)
@@ -80,6 +125,26 @@ def _parser() -> argparse.ArgumentParser:
     c = sub.add_parser("compare-rew", help="compare the engine with REW exports of one case")
     c.add_argument("case_dir")
     c.set_defaults(func=_cmd_compare)
+
+    data_help = f"data directory (default: ${DATA_ENV})"
+    v = sub.add_parser("serve", help="run the HTTP API")
+    v.add_argument("--data", help=data_help)
+    v.add_argument("--host", default="0.0.0.0")
+    v.add_argument("--port", type=int, default=8765)
+    v.add_argument("--no-zeroconf", action="store_true", help="do not advertise over mDNS")
+    v.set_defaults(func=_cmd_serve)
+
+    t = sub.add_parser("token", help="create, list or revoke API tokens")
+    tsub = t.add_subparsers(dest="token_command", required=True)
+    tc = tsub.add_parser("create", help="create a token and print it once")
+    tc.add_argument("name")
+    tc.add_argument("--role", choices=("app", "ha"), default="app")
+    tl = tsub.add_parser("list", help="list token names, roles and dates")
+    tr = tsub.add_parser("revoke", help="revoke the token with this name")
+    tr.add_argument("name")
+    for sp in (tc, tl, tr):
+        sp.add_argument("--data", help=data_help)
+        sp.set_defaults(func=_cmd_token)
     return p
 
 

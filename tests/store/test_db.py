@@ -34,10 +34,10 @@ def test_open_creates_layout(tmp_path):
             "session_points", "tokens"} <= tables
 
 
-def test_migration_from_empty_sets_user_version_2(tmp_path):
+def test_migration_from_empty_sets_user_version_3(tmp_path):
     Store.open(tmp_path)
     con = sqlite3.connect(tmp_path / "engine.sqlite3")
-    assert con.execute("PRAGMA user_version").fetchone()[0] == 2
+    assert con.execute("PRAGMA user_version").fetchone()[0] == 3
 
 
 def test_calibration_versions_increment_per_node(tmp_path):
@@ -145,3 +145,35 @@ def test_concurrent_writes(tmp_path):
     [t.start() for t in ts]
     [t.join() for t in ts]
     assert not errs and s.latest_calibration("n1").version == 80
+
+
+def test_migrates_v1_database_with_data(tmp_path):
+    from hifisync_acoustics.store.db import _migration_sql, _split_statements
+
+    con = sqlite3.connect(tmp_path / "engine.sqlite3")
+    for stmt in _split_statements(_migration_sql("schema.sql")):
+        con.execute(stmt)
+    con.execute("PRAGMA user_version = 1")
+    con.execute("INSERT INTO rooms VALUES ('r1', 'Kitchen', 4, 3, 2.5, NULL, 't')")
+    con.execute("INSERT INTO points VALUES ('p1', 'r1', 'Sink', 1, 1, 1.2)")
+    con.execute("INSERT INTO sessions (id, room_id, state, created_at, updated_at)"
+                " VALUES ('s1', 'r1', 'done', 't', 't')")
+    con.execute("INSERT INTO session_points (session_id, point_id, state) VALUES ('s1', 'p1', 'done')")
+    con.execute("INSERT INTO tokens VALUES ('t1', 'old', 'abc', 't', NULL)")
+    con.commit()
+    con.close()
+
+    s = Store.open(tmp_path)
+    con = sqlite3.connect(tmp_path / "engine.sqlite3")
+    assert con.execute("PRAGMA user_version").fetchone()[0] == 3
+    cols = {t: {r[1] for r in con.execute(f"PRAGMA table_info({t})")}
+            for t in ("session_points", "sessions", "tokens")}
+    assert "failure_detail" in cols["session_points"]
+    assert "analysis_claimed" in cols["sessions"]
+    assert "role" in cols["tokens"]
+    assert con.execute("SELECT role FROM tokens WHERE id = 't1'").fetchone()[0] == "app"
+    assert s.get_room("r1")["name"] == "Kitchen"
+    assert [p["id"] for p in s.list_points("r1")] == ["p1"]
+    sess = s.get_session("s1")
+    assert sess["state"] == "done" and sess["analysis_claimed"] == 0
+    assert sess["points"][0]["failure_detail"] is None
