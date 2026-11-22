@@ -1,8 +1,10 @@
 import numpy as np
 import pytest
+import scipy.io.wavfile
 import scipy.signal
 
-from hifisync_acoustics.analysis.ir import impulse_response
+from hifisync_acoustics.analysis.ir import impulse_response, ir_from_wav
+from hifisync_acoustics.analysis.response import frequency_response
 from hifisync_acoustics.analysis.sweep import SweepSpec, generate_sweep
 from hifisync_acoustics.wav import Recording, RecordingError
 
@@ -54,8 +56,31 @@ def test_recovers_known_delay_and_gain():
     s = generate_sweep(SweepSpec())
     r = impulse_response(_rec(_recording(s, _room_ir(rng), rng)), s)
     assert r.sample_rate == FS
-    assert r.peak_index == int(0.005 * FS)
+    assert r.peak_index == int(0.125 * FS)
     assert abs(_gain_1k_db(r.samples) - (-6.02)) < 0.1
+
+
+def test_identity_chain_is_flat_30hz_10khz():
+    """The default 6 s sweep straight back, after 0.5 s of noise at -90 dBFS."""
+    rng = np.random.default_rng(6)
+    s = generate_sweep(SweepSpec())
+    lead = 10 ** (-90 / 20) * rng.standard_normal(int(0.5 * FS))
+    x = np.concatenate([lead, s.signal, np.zeros(int(2.0 * FS))])
+    fr = frequency_response(impulse_response(_rec(x), s), smoothing=1 / 6)
+    band = (fr.freqs_hz >= 30) & (fr.freqs_hz <= 10000)
+    level = fr.level_db[band]
+    assert np.max(np.abs(level)) <= 0.5, (fr.freqs_hz[band][np.argmax(np.abs(level))],
+                                          np.max(np.abs(level)))
+
+
+def test_ir_from_wav_keeps_125_ms_lead_in(tmp_path):
+    x = np.zeros(2 * FS, dtype=np.float32)
+    x[FS] = 0.5
+    path = tmp_path / "ir.wav"
+    scipy.io.wavfile.write(path, FS, x)
+    r = ir_from_wav(path)
+    assert r.peak_index == int(0.125 * FS)
+    assert r.samples[r.peak_index] == pytest.approx(0.5)
 
 
 def test_repeats_averaged_and_selectable():
@@ -64,7 +89,7 @@ def test_repeats_averaged_and_selectable():
     rec = _rec(_recording(s, _room_ir(rng), rng, delay=777))
     avg = impulse_response(rec, s)
     one = impulse_response(rec, s, repeat=1)
-    assert avg.peak_index == one.peak_index == int(0.005 * FS)
+    assert avg.peak_index == one.peak_index == int(0.125 * FS)
     assert abs(_gain_1k_db(avg.samples) - (-6.02)) < 0.1
     assert abs(_gain_1k_db(one.samples) - (-6.02)) < 0.1
     with pytest.raises(ValueError):

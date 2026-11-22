@@ -1,4 +1,13 @@
-"""Impulse response from a recording of the measurement sweep."""
+"""Impulse response from a recording of the measurement sweep.
+
+The impulse response keeps PRE_PEAK_S (125 ms) before its peak; the first PRE_TAPER_S
+(25 ms) of that lead-in rise with a half-Hann window. A shorter, hard-cut lead-in would
+cut into the low-frequency part of the response, which a log sweep spreads ahead of the
+peak: with this window the response of an identity system read through
+``frequency_response(smoothing=1/6)`` is flat within +-0.5 dB from 30 Hz to 10 kHz for
+sweeps of 6 s or longer. Decay times are unaffected; they start at each band's energy
+peak.
+"""
 
 from __future__ import annotations
 
@@ -11,7 +20,8 @@ from scipy.signal import fftconvolve
 from hifisync_acoustics.analysis.sweep import Sweep
 from hifisync_acoustics.wav import Recording, RecordingError, read_wav
 
-PRE_PEAK_S = 0.005
+PRE_PEAK_S = 0.125
+PRE_TAPER_S = 0.025  # half-Hann rise at the start of the pre-peak window
 MIN_TAIL_S = 1.0
 MAX_SINGLE_TAIL_S = 3.0
 REFINE_S = 0.0005  # per-repeat peak search half-width (clock drift, jitter)
@@ -22,6 +32,14 @@ class ImpulseResponse:
     samples: np.ndarray
     sample_rate: int
     peak_index: int
+
+
+def _taper_lead_in(x: np.ndarray, fs: int, lead: int) -> np.ndarray:
+    """Half-Hann rise over the first PRE_TAPER_S of ``x``, never past ``lead`` samples."""
+    n = min(int(PRE_TAPER_S * fs), lead)
+    if n > 0:
+        x[:n] *= 0.5 * (1 - np.cos(np.pi * np.arange(n) / n))
+    return x
 
 
 def impulse_response(rec: Recording, sweep: Sweep, repeat: int | None = None) -> ImpulseResponse:
@@ -85,14 +103,18 @@ def impulse_response(rec: Recording, sweep: Sweep, repeat: int | None = None) ->
     for p in peaks:
         acc += y[p - pre : p - pre + length]
     acc /= len(peaks)
+    _taper_lead_in(acc, fs, pre)
     return ImpulseResponse(samples=acc, sample_rate=fs, peak_index=int(np.argmax(np.abs(acc))))
 
 
 def ir_from_wav(path: Path) -> ImpulseResponse:
     """An impulse response stored as a WAV file: the peak is the largest |sample|,
-    PRE_PEAK_S of lead-in is kept before it and everything after it is kept."""
+    PRE_PEAK_S of lead-in is kept before it (tapered as in ``impulse_response``) and
+    everything after it is kept."""
     rec = read_wav(path)
     x = rec.samples
+    fs = rec.sample_rate
     peak = int(np.argmax(np.abs(x)))
-    start = max(peak - int(PRE_PEAK_S * rec.sample_rate), 0)
-    return ImpulseResponse(samples=x[start:].copy(), sample_rate=rec.sample_rate, peak_index=peak - start)
+    start = max(peak - int(PRE_PEAK_S * fs), 0)
+    samples = _taper_lead_in(x[start:].copy(), fs, peak - start)
+    return ImpulseResponse(samples=samples, sample_rate=fs, peak_index=peak - start)

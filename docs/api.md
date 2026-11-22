@@ -136,6 +136,9 @@ Session states: `created`, `recording`, `analysing`, `done`, `failed`. Point sta
 - `GET /sessions/{id}/results` returns `{"session_id", "state", "failure", "points"}`. Each
   point has `point_id`, `node_id`, `state`, `failure`, `failure_detail` and `result`:
   frequency response, decay times, peaks, Schroeder frequency, `calibrated`, pre-flight
-  check and metadata.
+  check and metadata. The impulse response keeps 125 ms before its peak, with a half-Hann
+  rise over the first 25 ms. For sweeps of 6 s or longer, a system with a flat response
+  reads flat within ±0.5 dB from 30 Hz to 10 kHz at 1/6-octave smoothing; shorter sweeps
+  deviate more below about 40 Hz.
 - `GET /sessions/{id}/export` returns a ZIP with `session.json`, `recordings/<node>.wav` and
   `results/<point>.json`.
