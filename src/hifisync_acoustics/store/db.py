@@ -169,6 +169,11 @@ class Store:
                  install_y, install_z, install_source, _now()))
             return dict(con.execute("SELECT * FROM nodes WHERE id = ?", (node_id,)).fetchone())
 
+    def get_node(self, node_id: str) -> dict[str, Any] | None:
+        with closing(self._connect()) as con:
+            row = con.execute("SELECT * FROM nodes WHERE id = ?", (node_id,)).fetchone()
+        return None if row is None else dict(row)
+
     def list_nodes(self) -> list[dict[str, Any]]:
         with closing(self._connect()) as con:
             return [dict(r) for r in con.execute("SELECT * FROM nodes ORDER BY esphome_name, id")]
@@ -224,6 +229,108 @@ class Store:
                            created_at=row["created_at"], reference_id=row["reference_id"],
                            reference_cal_name=row["reference_cal_name"], curve=curve,
                            offset_db=row["offset_db"], conditions=row["conditions"])
+
+    # sessions ------------------------------------------------------------
+
+    def create_session(self, room_id: str, assignments: list[tuple[str, str]],
+                       sweep: dict[str, Any], player_chain: str | None) -> str:
+        """Insert a ``created`` session with one ``pending`` point per (point, node) pair."""
+        session_id = _uuid()
+        now = _now()
+        with self._write() as con:
+            con.execute(
+                "INSERT INTO sessions (id, room_id, state, created_at, updated_at, sweep_json,"
+                " player_chain) VALUES (?, ?, 'created', ?, ?, ?, ?)",
+                (session_id, room_id, now, now, json.dumps(sweep), player_chain))
+            for point_id, node_id in assignments:
+                row = con.execute("SELECT room_id FROM points WHERE id = ?",
+                                  (point_id,)).fetchone()
+                if row is None or row["room_id"] != room_id:
+                    raise ValueError(f"point {point_id} is not in room {room_id}")
+                con.execute(
+                    "INSERT INTO session_points (session_id, point_id, node_id, state)"
+                    " VALUES (?, ?, ?, 'pending')", (session_id, point_id, node_id))
+        return session_id
+
+    def get_session(self, session_id: str, include_results: bool = True) -> dict[str, Any] | None:
+        with closing(self._connect()) as con:
+            row = con.execute("SELECT * FROM sessions WHERE id = ?", (session_id,)).fetchone()
+            if row is None:
+                return None
+            pts = con.execute("SELECT * FROM session_points WHERE session_id = ? ORDER BY rowid",
+                              (session_id,)).fetchall()
+        d = dict(row)
+        sweep = d.pop("sweep_json")
+        d["sweep"] = None if sweep is None else json.loads(sweep)
+        points = []
+        for r in pts:
+            p = dict(r)
+            result = p.pop("result_json")
+            p["result"] = json.loads(result) if (include_results and result) else None
+            points.append(p)
+        d["points"] = points
+        return d
+
+    def set_session_state(self, session_id: str, state: str, failure: str | None = None) -> None:
+        with self._write() as con:
+            cur = con.execute("UPDATE sessions SET state = ?, failure = ?, updated_at = ?"
+                              " WHERE id = ?", (state, failure, _now(), session_id))
+            if cur.rowcount == 0:
+                raise KeyError(session_id)
+
+    def record_point_upload(self, session_id: str, node_id: str, *, recording_path: str | None,
+                            failure: str | None) -> str:
+        """Mark the node's point ``uploaded`` (or ``failed`` with ``failure``) and, once no point
+        is pending, move the session to ``analysing``; otherwise to ``recording``. Atomic.
+        Returns the session state. Raises KeyError for an unknown session or node and
+        ValueError when the session no longer accepts recordings."""
+        with self._write() as con:
+            s = con.execute("SELECT state FROM sessions WHERE id = ?", (session_id,)).fetchone()
+            if s is None:
+                raise KeyError(session_id)
+            if s["state"] not in ("created", "recording"):
+                raise ValueError(f"session {session_id} is {s['state']}, not accepting recordings")
+            cur = con.execute(
+                "UPDATE session_points SET state = ?, failure = ?, recording_path = ?"
+                " WHERE session_id = ? AND node_id = ?",
+                ("failed" if failure else "uploaded", failure, recording_path, session_id,
+                 node_id))
+            if cur.rowcount == 0:
+                raise KeyError(node_id)
+            pending = con.execute(
+                "SELECT COUNT(*) FROM session_points WHERE session_id = ? AND state = 'pending'",
+                (session_id,)).fetchone()[0]
+            state = "recording" if pending else "analysing"
+            con.execute("UPDATE sessions SET state = ?, updated_at = ? WHERE id = ?",
+                        (state, _now(), session_id))
+        return state
+
+    def set_point_result(self, session_id: str, point_id: str, *, state: str,
+                         failure: str | None, result: dict[str, Any] | None) -> None:
+        with self._write() as con:
+            con.execute(
+                "UPDATE session_points SET state = ?, failure = ?, result_json = ?"
+                " WHERE session_id = ? AND point_id = ?",
+                (state, failure, None if result is None else json.dumps(result), session_id,
+                 point_id))
+
+    def finish_session(self, session_id: str) -> str:
+        """End an ``analysing`` session: ``done`` when any point is done, else ``failed``."""
+        with self._write() as con:
+            done = con.execute(
+                "SELECT COUNT(*) FROM session_points WHERE session_id = ? AND state = 'done'",
+                (session_id,)).fetchone()[0]
+            state, failure = ("done", None) if done else ("failed", "all_points_failed")
+            con.execute("UPDATE sessions SET state = ?, failure = ?, updated_at = ?"
+                        " WHERE id = ?", (state, failure, _now(), session_id))
+        return state
+
+    def fail_analysing_sessions(self, failure: str) -> int:
+        with self._write() as con:
+            cur = con.execute(
+                "UPDATE sessions SET state = 'failed', failure = ?, updated_at = ?"
+                " WHERE state = 'analysing'", (failure, _now()))
+            return cur.rowcount
 
 
 def _split_statements(script: str) -> list[str]:
