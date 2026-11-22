@@ -237,7 +237,8 @@ in the URL. Every request it makes on its own node sets the node's `last_seen_at
    is answered once; if the node loses it (reboot, dropped connection), it expires.
 3. **Ack.** Within 10 s of taking the command, `POST /api/v1/nodes/{own}/commands/{id}`:
    - `{"state": "recording"}` just before the first sample is stored. Then record
-     `capture_s` seconds of 48 kHz, 16-bit, mono PCM.
+     `capture_s` seconds of 48 kHz, 16-bit PCM: mono, or two interleaved channels from a
+     node with two microphones.
    - `{"state": "failed", "detail": "no_memory"}` if the node cannot record, for example
      because `capture_s` does not fit its memory. `detail` is optional, a string of at most
      200 characters. The point fails `node_failed` with that detail, and the command is
@@ -256,7 +257,10 @@ in the URL. Every request it makes on its own node sets the node's `last_seen_at
    answers 409 `command_closed`: drop it and go back to polling. Acking `recording` twice is
    allowed.
 4. **Upload.** When the capture ends, `PUT` the WAV to `upload_path` as the raw body, with
-   `Content-Type: audio/wav` and `Content-Length` set (44-byte header + 2 bytes per sample).
+   `Content-Type: audio/wav` and `Content-Length` set (44-byte header + 2 bytes per sample
+   per channel). A node may upload a 2-channel WAV. The engine stores it whole, in the export
+   too, but analyses channel 0 only: the result's `meta` reports `"channels": 2` and
+   `"channel_used": 0`, and channel 1 is not analysed.
    The answer is 200 `{"point_state", "failure", "detail", "session_state"}` (see
    `PUT /sessions/{id}/recordings/{node_id}`), and the command becomes `done`. On a network
    error, a 5xx answer or 400 `incomplete_body`, send the whole upload again, a few times at

@@ -39,6 +39,8 @@ class AcousticsCaptureComponent : public Component {
   void set_node_id(const std::string &node_id) { this->node_id_ = node_id; }
   void set_token(const std::string &token) { this->token_ = token; }
   void set_max_capture_s(float seconds) { this->max_capture_s_ = seconds; }
+  // Channels the microphone source delivers: 1, or 2 for interleaved stereo frames.
+  void set_channels(uint8_t channels) { this->channels_ = channels; }
   void set_poll_wait_s(uint32_t seconds) { this->poll_wait_s_ = seconds; }
   void set_state_sensor(text_sensor::TextSensor *sensor) { this->state_sensor_ = sensor; }
 
@@ -64,8 +66,9 @@ class AcousticsCaptureComponent : public Component {
   bool ack_with_retry_(const std::string &command_id, const char *state, const char *detail);
   void record_(size_t bytes, float capture_s);
   void stop_recording_();
-  // Returns the HTTP status of the last attempt, or -1 for a network error.
-  int upload_(const Command &command, const uint8_t *data, size_t samples);
+  // Uploads `frames` frames of channels_ interleaved samples. Returns the HTTP status of the last
+  // attempt, or -1 for a network error.
+  int upload_(const Command &command, const uint8_t *data, size_t frames);
 
   // One request on a fresh connection, closed before returning. The body is body followed by
   // body2 (either may be null), written in 4 KiB pieces with Content-Length set to their sum. The
@@ -82,6 +85,7 @@ class AcousticsCaptureComponent : public Component {
   std::string node_id_;
   std::string token_;
   float max_capture_s_{60.0f};
+  uint8_t channels_{1};
   uint32_t poll_wait_s_{25};
 
   TaskHandle_t worker_handle_{nullptr};

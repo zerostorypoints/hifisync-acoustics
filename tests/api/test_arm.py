@@ -1,8 +1,11 @@
 import asyncio
+import io
 import json
 import time
 
+import numpy as np
 import pytest
+from scipy.io import wavfile
 
 from conftest import bearer, make_client, wav_bytes
 from hifisync_acoustics import commands
@@ -264,6 +267,43 @@ async def test_node_token_uploads_own_recording(client, app_token, node_a, sid):
     assert r.json()["point_state"] == "uploaded"
     s = (await client.get(f"/api/v1/sessions/{sid}", headers=bearer(app_token))).json()
     assert s["nodes"][0]["command_state"] == "done"
+
+
+def _stereo_pcm16(left, right) -> bytes:
+    """A 2-channel 16-bit WAV, as a stereo acoustics_capture node uploads it."""
+    buf = io.BytesIO()
+    frames = np.stack([left, right], axis=1)
+    wavfile.write(buf, 48000, np.round(np.clip(frames, -1.0, 1.0) * 32767).astype(np.int16))
+    return buf.getvalue()
+
+
+@pytest.mark.parametrize("signal_on", [0, 1])
+async def test_stereo_upload_is_analysed_on_channel_0(client, app_token, node_a, node_b, sid,
+                                                      signal_on):
+    _, mono = wavfile.read(io.BytesIO(wav_bytes()))
+    silent = np.zeros_like(mono)
+    body = _stereo_pcm16(mono, silent) if signal_on == 0 else _stereo_pcm16(silent, mono)
+    await _arm(client, app_token, sid)
+    cmd = (await _poll(client, node_a, "node-a")).json()
+    await _ack(client, node_a, "node-a", cmd["id"], {"state": "recording"})
+    r = await client.put(cmd["upload_path"], content=body,
+                         headers={**bearer(node_a), "Content-Type": "audio/wav"})
+    assert r.status_code == 200, r.text
+    assert r.json()["point_state"] == "uploaded"
+    cmd = (await _poll(client, node_b, "node-b")).json()
+    await _ack(client, node_b, "node-b", cmd["id"], {"state": "failed"})
+
+    res = (await client.get(f"/api/v1/sessions/{sid}/results",
+                            headers=bearer(app_token))).json()
+    point = next(p for p in res["points"] if p["node_id"] == "node-a")
+    meta = point["result"]["meta"]
+    assert meta["channels"] == 2 and meta["channel_used"] == 0
+    assert meta["subtype"] == "PCM_16" and meta["sample_rate"] == 48000
+    if signal_on == 0:
+        assert point["state"] == "done", point
+        assert point["result"]["fr"]["freqs_hz"]
+    else:  # the sweep only on channel 1: channel 0 is silent, so the analysis finds no sweep
+        assert point["result"]["preflight"]["ok"] is False, point
 
 
 async def test_ack_failed_of_last_open_point_starts_analysis(client, app_token, node_a,

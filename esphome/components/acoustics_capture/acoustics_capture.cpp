@@ -126,15 +126,25 @@ void AcousticsCaptureComponent::loop() {
 }
 
 void AcousticsCaptureComponent::dump_config() {
+  // What the capture buffer can actually get now: max_capture is checked against it here, and a
+  // command that does not fit when it arrives is acked failed / no_memory.
+  const size_t largest = heap_caps_get_largest_free_block(MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+  const float fits_s = core::seconds_in(largest, core::SAMPLE_RATE, this->channels_);
   ESP_LOGCONFIG(TAG,
                 "Acoustics capture:\n"
                 "  Engine URL: %s\n"
                 "  Node ID: %s\n"
                 "  Firmware: %s\n"
+                "  Channels: %u\n"
                 "  Max capture: %.1f s\n"
+                "  Largest PSRAM block: %u bytes (%.0f s)\n"
                 "  Poll wait: %u s",
-                this->engine_url_.c_str(), this->node_id_.c_str(), FIRMWARE, this->max_capture_s_,
-                (unsigned) this->poll_wait_s_);
+                this->engine_url_.c_str(), this->node_id_.c_str(), FIRMWARE, (unsigned) this->channels_,
+                this->max_capture_s_, (unsigned) largest, fits_s, (unsigned) this->poll_wait_s_);
+  if (fits_s < this->max_capture_s_) {
+    ESP_LOGW(TAG, "max_capture %.1f s does not fit the largest free PSRAM block (%.0f s at %u channels)",
+             this->max_capture_s_, fits_s, (unsigned) this->channels_);
+  }
   LOG_TEXT_SENSOR("  ", "State", this->state_sensor_);
 }
 
@@ -269,11 +279,14 @@ void AcousticsCaptureComponent::handle_command_(const Command &command) {
     return;
   }
 
-  const size_t samples = core::samples_for(command.capture_s, core::SAMPLE_RATE);
-  const size_t bytes = samples * sizeof(int16_t);
+  const size_t frames = core::samples_for(command.capture_s, core::SAMPLE_RATE);
+  const size_t frame_bytes = core::frame_bytes(this->channels_);
+  const size_t bytes = frames * frame_bytes;
   auto *buffer = static_cast<uint8_t *>(heap_caps_malloc(bytes, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT));
   if (buffer == nullptr) {
-    ESP_LOGW(TAG, "Command %s: no PSRAM for %u bytes", cid, (unsigned) bytes);
+    ESP_LOGW(TAG, "Command %s: no PSRAM for %u bytes (%u channels); largest free block %u bytes", cid,
+             (unsigned) bytes, (unsigned) this->channels_,
+             (unsigned) heap_caps_get_largest_free_block(MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT));
     this->ack_with_retry_(command.id, "failed", "no_memory");
     return;
   }
@@ -287,7 +300,8 @@ void AcousticsCaptureComponent::handle_command_(const Command &command) {
   this->buffer_ = buffer;
   this->capacity_ = bytes;
   this->record_(bytes, command.capture_s);
-  const size_t got = this->filled_.load(std::memory_order_acquire) / sizeof(int16_t);
+  // The source delivers whole frames and the buffer holds whole frames, so this does not round.
+  const size_t got = this->filled_.load(std::memory_order_acquire) / frame_bytes;
   this->buffer_ = nullptr;
   this->capacity_ = 0;
 
@@ -295,8 +309,8 @@ void AcousticsCaptureComponent::handle_command_(const Command &command) {
     ESP_LOGW(TAG, "Command %s: no audio arrived", cid);
     this->ack_with_retry_(command.id, "failed", "no_audio");
   } else {
-    if (got < samples)
-      ESP_LOGW(TAG, "Command %s: recorded %u of %u samples", cid, (unsigned) got, (unsigned) samples);
+    if (got < frames)
+      ESP_LOGW(TAG, "Command %s: recorded %u of %u frames", cid, (unsigned) got, (unsigned) frames);
     this->upload_(command, buffer, got);
   }
   heap_caps_free(buffer);
@@ -355,11 +369,11 @@ bool AcousticsCaptureComponent::ack_with_retry_(const std::string &command_id, c
   return false;
 }
 
-int AcousticsCaptureComponent::upload_(const Command &command, const uint8_t *data, size_t samples) {
+int AcousticsCaptureComponent::upload_(const Command &command, const uint8_t *data, size_t frames) {
   const char *const cid = command.id.c_str();
   uint8_t header[44];
-  core::wav_header(header, (uint32_t) samples, core::SAMPLE_RATE);
-  const size_t data_bytes = samples * sizeof(int16_t);
+  core::wav_header(header, (uint32_t) frames, core::SAMPLE_RATE, this->channels_);
+  const size_t data_bytes = frames * core::frame_bytes(this->channels_);
   this->set_state_(CaptureState::UPLOADING);
 
   int status = -1;

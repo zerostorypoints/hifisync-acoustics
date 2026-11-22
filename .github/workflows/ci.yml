@@ -26,7 +26,8 @@ jobs:
           path: |
             ~/.platformio
             esphome/examples/.esphome
-          key: esphome-2026.9.1-${{ hashFiles('esphome/examples/capture-node.yaml') }}
+          key: esphome-2026.9.1-${{ hashFiles('esphome/examples/capture-node*.yaml') }}
           restore-keys: esphome-2026.9.1-
       - run: cp esphome/examples/secrets.example.yaml esphome/examples/secrets.yaml
       - run: uvx esphome@2026.9.1 compile esphome/examples/capture-node.yaml
+      - run: uvx esphome@2026.9.1 compile esphome/examples/capture-node-stereo.yaml
