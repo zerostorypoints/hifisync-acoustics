@@ -1,0 +1,74 @@
+# Measurement node: ESP32-S3 with 8 MB octal PSRAM and an IM73D122 PDM microphone.
+# It long-polls the engine for a record command, records 48 kHz/16-bit mono into PSRAM and
+# uploads a WAV. docs/node-firmware.md describes the setup.
+# Compile check: cp secrets.example.yaml secrets.yaml && esphome compile capture-node.yaml
+
+esphome:
+  name: node-a
+  min_version: 2026.9.0
+
+esp32:
+  variant: esp32s3
+  board: esp32-s3-devkitc-1
+  flash_size: 16MB
+  cpu_frequency: 240MHz
+  framework:
+    type: esp-idf
+
+psram:
+  mode: octal
+  speed: 80MHz
+
+logger:
+  level: DEBUG
+  hardware_uart: UART0   # the COM port of the DevKitC-1 clone; USB_CDC is the other USB-C port
+
+wifi:
+  ssid: !secret wifi_ssid
+  password: !secret wifi_password
+
+external_components:
+  - source:
+      type: local
+      path: ../components
+    components: [acoustics_capture]
+
+# ---- Microphone: IM73D122, PDM ----
+# PDM clock on the LRCLK (WS) pin, data on DIN. 48 kHz with the default pdm_dsr 8 gives a
+# 64 x 48 kHz = 3.072 MHz clock.
+i2s_audio:
+  - id: i2s_bus
+    i2s_lrclk_pin: GPIO4   # -> mic CLK
+
+microphone:
+  - platform: i2s_audio
+    id: mic
+    i2s_audio_id: i2s_bus
+    adc_type: external
+    pdm: true
+    i2s_din_pin: GPIO5     # <- mic DATA
+    sample_rate: 48000
+    bits_per_sample: 16bit
+    channel: right
+    correct_dc_offset: true
+
+# Not passive: it starts the microphone and keeps it running, so the passive capture source
+# receives audio whenever a command arrives.
+sensor:
+  - platform: sound_level
+    microphone: mic
+    passive: false
+    measurement_duration: 1s
+    rms:
+      name: Sound level
+
+acoustics_capture:
+  id: capture
+  microphone: mic
+  engine_url: http://192.0.2.10:8765
+  node_id: node-a
+  token: !secret acoustics_node_token
+  max_capture: 60s
+  poll_wait: 25s
+  state:
+    name: Capture state
