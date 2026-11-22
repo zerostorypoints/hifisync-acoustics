@@ -42,7 +42,7 @@ def _wav(tmp_path, name, *, rate=48000, gain=1.0, noise=1e-4, seed=0):
 @pytest.fixture
 def env(tmp_path):
     store = Store.open(tmp_path / "data")
-    room = store.upsert_room(None, "Salon", width_m=4.0, length_m=5.0, height_m=2.5)
+    room = store.upsert_room(None, "Living room", width_m=4.0, length_m=5.0, height_m=2.5)
     for n in ("n1", "n2"):
         store.upsert_node(n, esphome_name=f"mic-{n}")
     p1 = store.add_point(room["id"], "LP", 1.0, 1.0, 1.2)

@@ -70,13 +70,13 @@ def test_calibration_curve_round_trips_exactly(tmp_path):
 
 def test_reopen_keeps_data(tmp_path):
     s = Store.open(tmp_path)
-    room = s.upsert_room(None, "Salon", width_m=4.0, length_m=6.0, height_m=2.5, snapshot={"a": 1})
+    room = s.upsert_room(None, "Living room", width_m=4.0, length_m=6.0, height_m=2.5, snapshot={"a": 1})
     _node(s, install_room_id=room["id"])
     s.add_calibration("n1", _curve(), 0.0, "r", "c", None)
     del s
     s2 = Store.open(tmp_path)
     r = s2.get_room(room["id"])
-    assert r["name"] == "Salon" and r["snapshot"] == {"a": 1}
+    assert r["name"] == "Living room" and r["snapshot"] == {"a": 1}
     assert [n["id"] for n in s2.list_nodes()] == ["n1"]
     assert s2.latest_calibration("n1").version == 1
     assert s2.add_calibration("n1", _curve(), 0.0, "r", "c", None) == 2
