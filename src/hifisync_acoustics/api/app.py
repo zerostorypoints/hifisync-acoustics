@@ -7,6 +7,8 @@ error messages carry no file system paths.
 
 from __future__ import annotations
 
+import asyncio
+import contextlib
 import dataclasses
 import functools
 import io
@@ -31,12 +33,12 @@ from starlette.concurrency import run_in_threadpool
 from starlette.datastructures import UploadFile
 from starlette.exceptions import HTTPException
 from starlette.middleware import Middleware
-from starlette.requests import Request
+from starlette.requests import ClientDisconnect, Request
 from starlette.responses import FileResponse, JSONResponse, Response
 from starlette.routing import Route
 from starlette.types import ASGIApp, Message, Receive, Scope, Send
 
-from hifisync_acoustics import __version__
+from hifisync_acoustics import __version__, commands
 from hifisync_acoustics.analysis.calibration import (
     broadband_offset_db,
     node_correction,
@@ -47,6 +49,7 @@ from hifisync_acoustics.analysis.preflight import preflight
 from hifisync_acoustics.analysis.response import frequency_response
 from hifisync_acoustics.analysis.sweep import SweepSpec, generate_sweep
 from hifisync_acoustics.api import auth
+from hifisync_acoustics.commands import SWEEP_LEAD_S
 from hifisync_acoustics.messages import public_message
 from hifisync_acoustics.sessions import (
     _safe_name,
@@ -55,7 +58,12 @@ from hifisync_acoustics.sessions import (
     create_session,
     export_session,
 )
-from hifisync_acoustics.store.db import ManagedByHA, Store
+from hifisync_acoustics.store.db import (
+    CommandClosed,
+    ManagedByHA,
+    SessionNotAccepting,
+    Store,
+)
 from hifisync_acoustics.wav import RecordingError, read_wav
 
 log = logging.getLogger(__name__)
@@ -64,7 +72,9 @@ access_log = logging.getLogger("hifisync_acoustics.api.access")
 API = "/api/v1"
 MAX_UPLOAD_BYTES = 200 * 1024 * 1024
 MIN_SWEEP_S, MAX_SWEEP_S, MAX_REPEATS = 0.5, 60.0, 10
-SWEEP_LEAD_S = 1.0  # digital silence before the sweep in sweep.wav
+MIN_POLL_WAIT_S, MAX_POLL_WAIT_S, DEFAULT_POLL_WAIT_S = 1, 30, 25
+EXPIRY_INTERVAL_S = 5.0
+MAX_ACK_DETAIL = 200
 _TOKEN_PARAMS = {"token", "access_token", "bearer", "authorization", "auth", "api_key",
                  "apikey", "key"}
 _TOKEN_SCOPE_KEY = "hifisync.token"
@@ -278,10 +288,14 @@ def _id(value: str, kind: str) -> str:
 
 
 def create_app(store: Store, *, analyse_inline: bool = False,
-               max_upload_bytes: int = MAX_UPLOAD_BYTES) -> Starlette:
+               max_upload_bytes: int = MAX_UPLOAD_BYTES,
+               expiry_interval_s: float = EXPIRY_INTERVAL_S) -> Starlette:
     """``analyse_inline`` runs session analysis in the request instead of the worker
-    (tests only)."""
+    (tests only). ``expiry_interval_s`` is the period of the background command expiry."""
     executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="analysis")
+    # One event per node that long-polls; arming sets it. Pollers read the database only
+    # when woken or at the start, and hold no connection while they wait.
+    node_events: dict[str, asyncio.Event] = {}
     tmp_root = store.data_dir / "tmp"
     tmp_root.mkdir(parents=True, exist_ok=True)
 
@@ -292,6 +306,30 @@ def create_app(store: Store, *, analyse_inline: bool = False,
             log.info("session %s is already being analysed", session_id)
         except Exception as exc:
             log.error("analysis of session %s failed: %s", session_id, type(exc).__name__)
+
+    async def start_analysis(session_id: str) -> None:
+        if analyse_inline:
+            await run_in_threadpool(run_analysis, session_id)
+        else:
+            executor.submit(run_analysis, session_id)
+
+    async def expire_commands() -> None:
+        """Expire overdue node commands and analyse the sessions that leaves complete."""
+        complete: list[str] = []
+        commands.expire(store, on_analysing=complete.append)
+        for session_id in complete:
+            await start_analysis(session_id)
+
+    def expiring(handler):
+        """Session routes run command expiry first, so they never show a stale state."""
+        @functools.wraps(handler)
+        async def wrapped(request: Request) -> Response:
+            await expire_commands()
+            return await handler(request)
+        return wrapped
+
+    def node_event(node_id: str) -> asyncio.Event:
+        return node_events.setdefault(node_id, asyncio.Event())
 
     def role(request: Request) -> str:
         return request.scope[_TOKEN_SCOPE_KEY].role
@@ -314,6 +352,16 @@ def create_app(store: Store, *, analyse_inline: bool = False,
         for p in session["points"]:
             if p.get("failure_detail"):
                 p["failure_detail"] = public_message(p["failure_detail"])
+        latest = {c["node_id"]: c for c in store.list_commands(session["id"])}
+        nodes = []
+        for p in session["points"]:
+            cmd = latest.get(p["node_id"]) or {}
+            nodes.append({"node_id": p["node_id"], "command_state": cmd.get("state"),
+                          "detail": public_message(cmd["detail"]) if cmd.get("detail")
+                          else None})
+        session["nodes"] = nodes
+        session["ready"] = bool(session["nodes"]) and all(
+            n["command_state"] == "recording" for n in session["nodes"])
         return session
 
     # health, sweep --------------------------------------------------------
@@ -510,30 +558,120 @@ def create_app(store: Store, *, analyse_inline: bool = False,
         session = session_or_404(session_id, False)
         if node_id not in {p["node_id"] for p in session["points"]}:
             raise ApiError(404, "not_found", "node is not part of this session")
+        declared = request.headers.get("content-length")
         fd, tmp = tempfile.mkstemp(dir=tmp_root, prefix="upload-", suffix=".wav")
         try:
+            received = 0
             with os.fdopen(fd, "wb") as out:
-                async for chunk in request.stream():
-                    out.write(chunk)
+                try:
+                    async for chunk in request.stream():
+                        out.write(chunk)
+                        received += len(chunk)
+                except ClientDisconnect:
+                    raise _incomplete(received, declared) from None
+            if declared is not None and declared.isdigit() and received < int(declared):
+                raise _incomplete(received, declared)
             try:
                 outcome = await run_in_threadpool(add_recording, store, session_id, node_id,
                                                   Path(tmp))
             except KeyError:
                 raise ApiError(404, "not_found", "unknown session or node") from None
-            except ValueError:
+            except ValueError:  # SessionNotAccepting
                 raise ApiError(409, "session_not_accepting",
                                "the session is not accepting recordings") from None
         finally:
             Path(tmp).unlink(missing_ok=True)
         if outcome.session_state == "analysing":
-            if analyse_inline:
-                await run_in_threadpool(run_analysis, session_id)
-            else:
-                executor.submit(run_analysis, session_id)
+            await start_analysis(session_id)
         out = dataclasses.asdict(outcome)
         if out["detail"]:
             out["detail"] = public_message(out["detail"], {tmp: "recording"})
         return JSONResponse(out)
+
+    async def arm_session(request: Request) -> Response:
+        session_id = request.path_params["session_id"]
+        raw = await request.body()
+        body = await _json_object(request) if raw.strip() else {}
+        if set(body) - {"start_window_s"}:
+            raise ApiError(400, "bad_request", "the body accepts start_window_s only")
+        window = body.get("start_window_s", commands.DEFAULT_START_WINDOW_S)
+        window = _number(window, "start_window_s")
+        if not 0.0 <= window <= commands.MAX_START_WINDOW_S:
+            raise ApiError(400, "bad_request", "start_window_s must be between 0 and "
+                           f"{commands.MAX_START_WINDOW_S:g} s")
+        try:
+            armed = commands.arm(store, session_id, window)
+        except KeyError:
+            raise ApiError(404, "not_found", "unknown session") from None
+        except SessionNotAccepting:
+            raise ApiError(409, "session_not_accepting",
+                           "the session is not created or is already armed") from None
+        except ValueError as exc:
+            if str(exc) == "capture_too_long":
+                raise ApiError(400, "capture_too_long", "the capture would be longer than "
+                               f"{commands.MAX_CAPTURE_S:g} s; shorten the sweep or the "
+                               "start window") from None
+            raise ApiError(400, "bad_request", public_message(str(exc))) from None
+        for cmd in armed:
+            node_event(cmd["node_id"]).set()
+        return JSONResponse(session_view(session_or_404(session_id, False)))
+
+    async def next_command(request: Request) -> Response:
+        node_id = request.path_params["node_id"]
+        require_role(request, "node")
+        require_own_node(request, node_id)
+        raw = request.query_params.get("wait")
+        try:
+            wait = DEFAULT_POLL_WAIT_S if raw is None else int(raw)
+        except ValueError:
+            wait = -1
+        if not MIN_POLL_WAIT_S <= wait <= MAX_POLL_WAIT_S:
+            raise ApiError(400, "bad_request", f"wait must be an integer from "
+                           f"{MIN_POLL_WAIT_S} to {MAX_POLL_WAIT_S}")
+        loop = asyncio.get_running_loop()
+        deadline = loop.time() + wait
+        while True:
+            event = node_event(node_id)
+            event.clear()
+            await expire_commands()
+            cmd = commands.next_for(store, node_id)
+            if cmd is not None:
+                return JSONResponse(cmd)
+            remaining = deadline - loop.time()
+            if remaining <= 0:
+                return Response(status_code=204)
+            try:
+                await asyncio.wait_for(event.wait(), remaining)
+            except TimeoutError:
+                return Response(status_code=204)
+
+    async def ack_command(request: Request) -> Response:
+        node_id = request.path_params["node_id"]
+        require_role(request, "node")
+        require_own_node(request, node_id)
+        body = await _json_object(request)
+        if set(body) - {"state", "detail"}:
+            raise ApiError(400, "bad_request", "the body accepts state and detail only")
+        state = body.get("state")
+        if state not in ("recording", "failed"):
+            raise ApiError(400, "bad_request", 'state must be "recording" or "failed"')
+        detail = body.get("detail")
+        if detail is not None and (not isinstance(detail, str) or len(detail) > MAX_ACK_DETAIL):
+            raise ApiError(400, "bad_request",
+                           f"detail must be a string of at most {MAX_ACK_DETAIL} characters")
+        await expire_commands()
+        try:
+            cmd, session_state = commands.ack(store, node_id, request.path_params["command_id"],
+                                              state, detail or None)
+        except KeyError:
+            raise ApiError(404, "not_found", "unknown command") from None
+        except CommandClosed:
+            raise ApiError(409, "command_closed",
+                           "the command is done, failed or expired") from None
+        if session_state == "analysing":
+            await start_analysis(cmd["session_id"])
+        return JSONResponse({"id": cmd["id"], "session_id": cmd["session_id"],
+                             "state": cmd["state"]})
 
     async def get_export(request: Request) -> Response:
         session_id = request.path_params["session_id"]
@@ -560,10 +698,24 @@ def create_app(store: Store, *, analyse_inline: bool = False,
         log.error("%s %s failed: %s", request.method, request.url.path, type(exc).__name__)
         return _error_response(500, "internal_error", "internal error")
 
+    async def expiry_loop() -> None:
+        while True:
+            await asyncio.sleep(expiry_interval_s)
+            try:
+                await expire_commands()
+            except Exception as exc:
+                log.error("command expiry failed: %s", type(exc).__name__)
+
     @asynccontextmanager
     async def lifespan(app: Starlette):
-        yield
-        executor.shutdown(wait=True, cancel_futures=True)
+        task = asyncio.create_task(expiry_loop())
+        try:
+            yield
+        finally:
+            task.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                await task
+            executor.shutdown(wait=True, cancel_futures=True)
 
     routes = [
         Route(f"{API}/health", health),
@@ -577,12 +729,17 @@ def create_app(store: Store, *, analyse_inline: bool = False,
         Route(f"{API}/nodes/{{node_id}}", put_node, methods=["PUT"]),
         Route(f"{API}/nodes/{{node_id}}/calibrations", staff(list_calibrations), methods=["GET"]),
         Route(f"{API}/nodes/{{node_id}}/calibrations", staff(add_calibration), methods=["POST"]),
-        Route(f"{API}/sessions", staff(post_session), methods=["POST"]),
-        Route(f"{API}/sessions/{{session_id}}", staff(get_session)),
-        Route(f"{API}/sessions/{{session_id}}/recordings/{{node_id}}", put_recording,
+        # Node routes: unwrapped, guarded by require_own_node.
+        Route(f"{API}/nodes/{{node_id}}/commands/next", next_command, methods=["GET"]),
+        Route(f"{API}/nodes/{{node_id}}/commands/{{command_id}}", ack_command, methods=["POST"]),
+        Route(f"{API}/sessions", staff(expiring(post_session)), methods=["POST"]),
+        Route(f"{API}/sessions/{{session_id}}", staff(expiring(get_session))),
+        Route(f"{API}/sessions/{{session_id}}/arm", staff(expiring(arm_session)),
+              methods=["POST"]),
+        Route(f"{API}/sessions/{{session_id}}/recordings/{{node_id}}", expiring(put_recording),
               methods=["PUT"]),
-        Route(f"{API}/sessions/{{session_id}}/results", staff(get_results)),
-        Route(f"{API}/sessions/{{session_id}}/export", staff(get_export)),
+        Route(f"{API}/sessions/{{session_id}}/results", staff(expiring(get_results))),
+        Route(f"{API}/sessions/{{session_id}}/export", staff(expiring(get_export))),
     ]
     app = Starlette(
         routes=routes,
@@ -595,6 +752,12 @@ def create_app(store: Store, *, analyse_inline: bool = False,
     app.state.store = store
     app.state.executor = executor
     return app
+
+
+def _incomplete(received: int, declared: str | None) -> ApiError:
+    expected = f"{declared} announced" if declared else "the body was cut off"
+    return ApiError(400, "incomplete_body",
+                    f"the upload ended after {received} bytes ({expected}); nothing was stored")
 
 
 def _calibrate(paths: dict[str, Path], spec: SweepSpec):

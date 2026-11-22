@@ -39,6 +39,7 @@ hifisync-acoustics token revoke NAME
   | `GET /health` | 403 `forbidden` |
   | `PUT /nodes/{own}`, only the fields `esphome_name`, `firmware` and `capture` (any other field answers 403 `forbidden`) | |
   | `PUT /sessions/{id}/recordings/{own}` | |
+  | `GET /nodes/{own}/commands/next`, `POST /nodes/{own}/commands/{cid}` | |
 
   `{own}` is the node id of the token; the same routes for another node answer 403
   `forbidden`. A request with a `node` token on its own node sets the node's `last_seen_at`,
@@ -60,14 +61,24 @@ hifisync-acoustics token revoke NAME
 
 | Status | Codes |
 | --- | --- |
-| 400 | `bad_request`, `token_in_url`, `unknown_room`; a recording error code for a calibration upload (`unsupported_format`, `rate_mismatch`, `too_short`, `bad_calibration`, `clipped`, `no_signal`) |
+| 400 | `bad_request`, `token_in_url`, `unknown_room`, `capture_too_long` (arming), `incomplete_body` (an upload shorter than its `Content-Length`); a recording error code for a calibration upload (`unsupported_format`, `rate_mismatch`, `too_short`, `bad_calibration`, `clipped`, `no_signal`) |
 | 401 | `unauthorized` |
 | 403 | `forbidden` (a `node` token on a route or node it may not use) |
 | 404 | `not_found` |
-| 409 | `managed_by_ha`, `session_not_accepting` |
+| 409 | `managed_by_ha`, `session_not_accepting`, `command_closed` (an ack for a command that is `done`, `failed` or `expired`) |
 | 413 | `body_too_large` (bodies over 200 MB) |
 
 Error messages carry no file system paths.
+
+A point of a session fails with one of these codes in its `failure` field:
+
+| Code | When |
+| --- | --- |
+| `unsupported_format`, `rate_mismatch`, `too_short` | the upload cannot be used |
+| `clipped`, `no_signal` | the recording fails the pre-flight check in analysis |
+| `analysis_error` | analysis of the point failed |
+| `node_offline` | the node's command expired; `failure_detail` names the stage: `never polled`, `no recording ack` or `no upload` |
+| `node_failed` | the node acked `failed`; `failure_detail` is the node's `detail`, for example `no_memory` |
 
 ## Routes
 
@@ -131,7 +142,8 @@ Coordinates and room axes follow [coordinates.md](coordinates.md): `width_m` is 
 ### Sessions
 
 Session states: `created`, `recording`, `analysing`, `done`, `failed`. Point states:
-`pending`, `uploaded`, `done`, `failed`. One failed node fails only its point.
+`pending`, `uploaded`, `done`, `failed`. One failed node fails only its point. A session
+reaches `recording` with its first upload or when it is armed.
 
 - `POST /sessions` creates a session. The body is:
 
@@ -144,7 +156,22 @@ Session states: `created`, `recording`, `analysing`, `done`, `failed`. Point sta
 
   `sweep` and `player_chain` are optional. Each point and each node appears once. The answer
   is 201 with the session.
-- `GET /sessions/{id}` returns the session and its points without results.
+- `GET /sessions/{id}` returns the session and its points without results, and:
+  - `nodes`: one entry per point, `{"node_id", "command_state", "detail"}`. `command_state`
+    is the state of the node's command (see [Node protocol](#node-protocol)), or `null`
+    before the session is armed. `detail` is the stage of an expired command or the node's
+    reason for a failed one.
+  - `ready`: `true` when every node's command is in `recording`, so the sweep can be
+    played. A node that failed or expired keeps `ready` false.
+- `POST /sessions/{id}/arm` (roles `app` and `ha`) sends a `record` command to every node of
+  a `created` session and moves it to `recording`. The body is optional:
+  `{"start_window_s": 10}`, from 0 to 30 s, the time the user has to start playback after the
+  nodes are ready. Each node records `capture_s = start_window_s + sweep_file_s + 3` seconds,
+  where `sweep_file_s = 1 + repeats × duration_s + (repeats − 1) × 2` is the length of
+  `sweep.wav`. The answer is 200 with the session, as `GET /sessions/{id}` returns it.
+  - A capture over 60 s answers 400 `capture_too_long`, and no command is created.
+  - A session that is not `created`, or is already armed, answers 409
+    `session_not_accepting`, and no command is created.
 - `PUT /sessions/{id}/recordings/{node_id}` uploads the node's recording as the raw request
   body (`audio/wav`; PCM 16 or 24 bit, or float 32; channel 0 of a multichannel file). The
   answer is 200:
@@ -154,6 +181,11 @@ Session states: `created`, `recording`, `analysing`, `done`, `failed`. Point sta
    "detail": "recording is 44100 Hz but the sweep was generated at 48000 Hz",
    "session_state": "recording"}
   ```
+
+  A body shorter than its `Content-Length` (the connection dropped) answers 400
+  `incomplete_body`: nothing is stored and the point stays `pending`, so the node can send
+  the upload again. For a point whose node command failed or expired, an upload is not
+  stored: the answer is 200 with `point_state` `failed` and the point's existing `failure`.
 
   A recording needs at least 0.25 s of noise-only lead-in before the sweep; without it the
   point fails `no_signal` in analysis. Starting the recording before playing `sweep.wav`
@@ -170,3 +202,70 @@ Session states: `created`, `recording`, `analysing`, `done`, `failed`. Point sta
   deviate more below about 40 Hz.
 - `GET /sessions/{id}/export` returns a ZIP with `session.json`, `recordings/<node>.wav` and
   `results/<point>.json`.
+
+## Node protocol
+
+A measurement node needs a `node` token for its own id (see [Tokens](#tokens)) and the
+engine's URL. It sends the token as `Authorization: Bearer <token>` on every request, never
+in the URL. Every request it makes on its own node sets the node's `last_seen_at`.
+
+1. **Register.** At start, `PUT /api/v1/nodes/{own}` with
+   `{"esphome_name": "node-a", "firmware": "0.1.0", "capture": true}`. The answer is 200 with
+   the node.
+2. **Poll.** Loop on `GET /api/v1/nodes/{own}/commands/next?wait=25`. `wait` is an integer
+   from 1 to 30 seconds, default 25; another value answers 400 `bad_request`. The engine
+   holds the request until a command is available or `wait` seconds pass:
+   - 204 with no body: no command. Poll again at once.
+   - 200 with a command, which is now `taken`:
+
+     ```json
+     {"id": "6f1c…", "kind": "record", "session_id": "3a9e…", "capture_s": 16.0,
+      "upload_path": "/api/v1/sessions/3a9e…/recordings/node-a"}
+     ```
+
+   On a network error or a 5xx answer, wait a few seconds before polling again. A command
+   is answered once; if the node loses it (reboot, dropped connection), it expires.
+3. **Ack.** Within 10 s of taking the command, `POST /api/v1/nodes/{own}/commands/{id}`:
+   - `{"state": "recording"}` just before the first sample is stored. Then record
+     `capture_s` seconds of 48 kHz, 16-bit, mono PCM.
+   - `{"state": "failed", "detail": "no_memory"}` if the node cannot record, for example
+     because `capture_s` does not fit its memory. `detail` is optional, a string of at most
+     200 characters. The point fails `node_failed` with that detail, and the command is
+     closed.
+
+   The answer is 200 `{"id", "session_id", "state"}`. A command of another node or an
+   unknown id answers 404 `not_found`. A command that is `done`, `failed` or `expired`
+   answers 409 `command_closed`: drop it and go back to polling. Acking `recording` twice is
+   allowed.
+4. **Upload.** When the capture ends, `PUT` the WAV to `upload_path` as the raw body, with
+   `Content-Type: audio/wav` and `Content-Length` set (44-byte header + 2 bytes per sample).
+   The answer is 200 `{"point_state", "failure", "detail", "session_state"}` (see
+   `PUT /sessions/{id}/recordings/{node_id}`), and the command becomes `done`. On a network
+   error or 400 `incomplete_body`, send the whole upload again, a few times at most. 409
+   `session_not_accepting` means the session is over: drop the recording.
+5. Go back to polling.
+
+Command states:
+
+| State | Meaning |
+| --- | --- |
+| `pending` | created by arming; not yet taken |
+| `taken` | answered to a poll |
+| `recording` | the node acked `recording` |
+| `done` | the node uploaded its recording |
+| `failed` | the node acked `failed` |
+| `expired` | a deadline passed |
+
+Deadlines. A command that misses one expires, and its point fails `node_offline` with the
+stage in `failure_detail`:
+
+| Command state | Deadline | Stage |
+| --- | --- | --- |
+| `pending` | 30 s after arming | `never polled` |
+| `taken` | 10 s after it was taken | `no recording ack` |
+| `recording` | `capture_s + 60` s after it was taken | `no upload` |
+
+The engine checks deadlines on every request to a session route and on every poll and ack,
+and every 5 s in the background. An expired or failed point stays failed: a later upload for
+it is not stored. Once no point is pending, the session is analysed as usual, or fails
+`all_points_failed` when no point was uploaded.
