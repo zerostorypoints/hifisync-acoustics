@@ -184,7 +184,9 @@ void AcousticsCaptureComponent::worker_loop_() {
     this->set_state_(CaptureState::IDLE);
     if (got > 0) {
       this->handle_command_(command);
-      this->set_state_(CaptureState::IDLE);
+      // A lost upload leaves ERROR, which the next successful poll clears.
+      if (this->state_.load(std::memory_order_relaxed) != CaptureState::ERROR)
+        this->set_state_(CaptureState::IDLE);
     }
   }
 }
@@ -388,6 +390,7 @@ int AcousticsCaptureComponent::upload_(const Command &command, const uint8_t *da
     const bool incomplete = status == 400 && response.find("incomplete_body") != std::string::npos;
     if (status > 0 && status < 500 && !incomplete) {
       ESP_LOGW(TAG, "Command %s: upload refused, dropped", cid);
+      this->set_state_(CaptureState::ERROR);
       return status;
     }
   }

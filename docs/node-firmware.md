@@ -56,7 +56,8 @@ acoustics_capture:
   `no_memory`.
 - `poll_wait` is the `wait` of each poll. The read timeout is `poll_wait + 5 s`.
 - `state` publishes `idle` (polling), `armed` (a command arrived), `recording`, `uploading` or
-  `error` (the last request failed; the node retries with back-off).
+  `error`: a request failed and the node retries with back-off, or an upload failed or was
+  refused and the recording was dropped. `error` holds until the next successful request.
 
 To build from a local checkout instead of git, use `type: local` and the path to
 `esphome/components`, as the example does.
