@@ -10,6 +10,7 @@ from __future__ import annotations
 import json
 import os
 import shlex
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -168,9 +169,25 @@ def _summary_line(point: dict[str, Any], result: dict[str, Any] | None) -> str:
     return " ".join(parts)
 
 
+def _parse_play(play: str | None) -> list[str] | None:
+    """The player command as an argument list, checked before anything is armed."""
+    if not play:
+        return None
+    try:
+        cmd = shlex.split(play)
+    except ValueError as exc:
+        raise ClientError(f"bad --play command: {exc}") from exc
+    if not cmd:
+        raise ClientError("bad --play command: empty")
+    if shutil.which(cmd[0]) is None:
+        raise ClientError(f"bad --play command: {cmd[0]!r} not found")
+    return cmd
+
+
 def run_measure(args, out: Callable[[str], None] = print,
                 ask: Callable[[str], str] = input) -> int:
     engine = Engine(args.url, read_token(args.token_file))
+    play = _parse_play(args.play)
     if not args.yes:
         try:
             ask("Set the volume on your player now; nothing here changes it. "
@@ -195,10 +212,17 @@ def run_measure(args, out: Callable[[str], None] = print,
         f.write(sweep)
         path = f.name
     try:
-        if args.play:
-            cmd = [path if part == "{file}" else part.replace("{file}", path)
-                   for part in shlex.split(args.play)]
-            subprocess.run(cmd, check=False)
+        if play:
+            cmd = [part.replace("{file}", path) for part in play]
+            try:
+                done = subprocess.run(cmd, check=False)
+            except OSError as exc:
+                out(f"warning: player failed to start: {exc.strerror or exc}; "
+                    f"play the sweep yourself: {path}")
+            else:
+                if done.returncode != 0:
+                    out(f"warning: player exited with {done.returncode}; "
+                        "the sweep may not have played")
         else:
             out(f"Play the sweep now: {path}")
             out(f"The nodes are recording; start playback within {args.start_window:g} s.")

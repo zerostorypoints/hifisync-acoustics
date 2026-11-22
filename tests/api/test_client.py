@@ -1,6 +1,7 @@
 """The measure CLI against an in-process engine, with a fake node on a thread."""
 
 import threading
+from types import SimpleNamespace
 
 import pytest
 from starlette.testclient import TestClient
@@ -119,6 +120,7 @@ def test_play_command_no_shell(setup, node, monkeypatch, capsys):
 
     def fake_run(cmd, **kw):
         calls.append((cmd, kw))
+        return SimpleNamespace(returncode=0)
 
     monkeypatch.setattr(measure_client.subprocess, "run", fake_run)
     assert main(_args(setup, "--play", "echo {file}")) == 0
@@ -134,3 +136,38 @@ def test_connection_error_exits_2(setup, monkeypatch, capsys):
     monkeypatch.setattr(measure_client, "http_request", refuse)
     assert main(_args(setup)) == 2
     assert "cannot reach" in capsys.readouterr().err
+
+
+@pytest.mark.parametrize("play", ["echo 'unbalanced {file}", "no-such-player-xyz {file}", " "])
+def test_bad_play_exits_2(setup, play, capsys):
+    assert main(_args(setup, "--play", play)) == 2
+    assert "bad --play command" in capsys.readouterr().err
+
+
+def test_bad_play_creates_no_session(setup, engine, monkeypatch):
+    posts = []
+    real = measure_client.http_request
+
+    def spy(method, url, headers, body):
+        posts.append((method, url))
+        return real(method, url, headers, body)
+
+    monkeypatch.setattr(measure_client, "http_request", spy)
+    assert main(_args(setup, "--play", "no-such-player-xyz {file}")) == 2
+    assert posts == []
+
+
+def test_player_nonzero_warns(setup, node, monkeypatch, capsys):
+    monkeypatch.setattr(measure_client.subprocess, "run",
+                        lambda cmd, **kw: SimpleNamespace(returncode=3))
+    assert main(_args(setup, "--play", "echo {file}")) == 0
+    assert "player exited with 3" in capsys.readouterr().out
+
+
+def test_player_oserror_warns(setup, node, monkeypatch, capsys):
+    def boom(cmd, **kw):
+        raise FileNotFoundError(2, "No such file or directory")
+
+    monkeypatch.setattr(measure_client.subprocess, "run", boom)
+    assert main(_args(setup, "--play", "echo {file}")) == 0
+    assert "player failed to start" in capsys.readouterr().out
