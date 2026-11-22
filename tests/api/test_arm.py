@@ -4,7 +4,7 @@ import time
 
 import pytest
 
-from conftest import bearer, wav_bytes
+from conftest import bearer, make_client, wav_bytes
 from hifisync_acoustics import commands
 from hifisync_acoustics.api import auth
 from hifisync_acoustics.api.app import create_app
@@ -153,6 +153,42 @@ async def test_poll_wakes_on_arm(client, app_token, node_a, sid):
     assert body["kind"] == "record" and body["session_id"] == sid
     assert body["capture_s"] == 10.0 + 3.0 + 3.0
     assert body["upload_path"] == f"/api/v1/sessions/{sid}/recordings/node-a"
+
+
+async def test_stale_poll_does_not_take_command(store, client, app_token, node_a, sid):
+    """A poll whose client went away must leave the command for the node's live poll."""
+    app = create_app(store, analyse_inline=True)
+    sent, calls = [], 0
+
+    async def receive():
+        nonlocal calls
+        calls += 1
+        if calls == 1:
+            return {"type": "http.request", "body": b"", "more_body": False}
+        return {"type": "http.disconnect"}
+
+    async def send(message):
+        sent.append(message)
+
+    path = "/api/v1/nodes/node-a/commands/next"
+    scope = {
+        "type": "http", "asgi": {"version": "3.0"}, "http_version": "1.1", "method": "GET",
+        "scheme": "http", "path": path, "raw_path": path.encode(), "query_string": b"wait=5",
+        "root_path": "", "client": ("127.0.0.1", 1), "server": ("engine", 80),
+        "headers": [(b"host", b"engine"), (b"authorization", f"Bearer {node_a}".encode())],
+    }
+    stale = asyncio.create_task(app(scope, receive, send))
+    await asyncio.sleep(0.1)
+    async with make_client(app) as same:  # the same app, so the same per-node events
+        live = asyncio.create_task(_poll(same, node_a, "node-a", wait=5))
+        await asyncio.sleep(0.1)
+        assert (await _arm(same, app_token, sid)).status_code == 200
+        r = await asyncio.wait_for(live, 2)
+    await asyncio.wait_for(stale, 2)
+    assert r.status_code == 200, r.text
+    assert sent[0]["status"] == 204
+    a = next(c for c in store.list_commands(sid) if c["node_id"] == "node-a")
+    assert a["id"] == r.json()["id"] and a["state"] == "taken"
 
 
 async def test_ready_after_all_ack(client, app_token, node_a, node_b, sid):

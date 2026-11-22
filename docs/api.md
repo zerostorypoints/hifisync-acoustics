@@ -223,6 +223,10 @@ in the URL. Every request it makes on its own node sets the node's `last_seen_at
       "upload_path": "/api/v1/sessions/3a9e…/recordings/node-a"}
      ```
 
+   Set the client's read timeout longer than `wait`, for example `wait + 5` s, and close the
+   connection when a poll is abandoned. The engine hands a command only to a poll whose
+   connection is still open; a poll that is abandoned while the connection stays open can
+   take the command, which then expires `no recording ack`.
    On a network error or a 5xx answer, wait a few seconds before polling again. A command
    is answered once; if the node loses it (reboot, dropped connection), it expires.
 3. **Ack.** Within 10 s of taking the command, `POST /api/v1/nodes/{own}/commands/{id}`:

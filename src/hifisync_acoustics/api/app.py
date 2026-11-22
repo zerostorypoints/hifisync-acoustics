@@ -634,6 +634,10 @@ def create_app(store: Store, *, analyse_inline: bool = False,
             event = node_event(node_id)
             event.clear()
             await expire_commands()
+            # Starlette does not cancel a handler whose client left. A stale poll must not
+            # take the command that the node's live poll is waiting for.
+            if await request.is_disconnected():
+                return Response(status_code=204)
             cmd = commands.next_for(store, node_id)
             if cmd is not None:
                 return JSONResponse(cmd)
