@@ -1,7 +1,9 @@
 """Measurement sessions: one recording per (point, node), analysed point by point.
 
-Session states: created -> recording -> analysing -> done | failed.
-Point states: pending -> uploaded -> done | failed.
+Session states: created -> recording -> analysing -> done | failed. Arming a session
+(commands.arm) also moves it to recording.
+Point states: pending -> uploaded -> done | failed. A point whose node command failed or
+expired stays failed: a later upload for it is not stored.
 """
 
 from __future__ import annotations
@@ -20,7 +22,7 @@ from hifisync_acoustics.analysis.modes import RoomDimensions
 from hifisync_acoustics.analysis.sweep import SweepSpec, generate_sweep
 from hifisync_acoustics.messages import public_message
 from hifisync_acoustics.report import analyse_recording
-from hifisync_acoustics.store.db import Store
+from hifisync_acoustics.store.db import PointClosed, Store
 from hifisync_acoustics.wav import RecordingError, read_wav
 
 log = logging.getLogger(__name__)
@@ -62,7 +64,9 @@ def create_session(store: Store, room_id: str, assignments: list[tuple[str, str]
 def add_recording(store: Store, session_id: str, node_id: str, wav_path: Path) -> UploadOutcome:
     """Validate and store the node's recording. An unusable WAV fails only that point.
 
-    The stored file is replaced only when the upload is accepted by the session."""
+    The stored file is replaced only when the upload is accepted by the session. For a
+    point closed by its node command (failed or expired) nothing is stored and the outcome
+    is that point's failure."""
     session = store.get_session(session_id, include_results=False)
     if session is None:
         raise KeyError(session_id)
@@ -84,8 +88,11 @@ def add_recording(store: Store, session_id: str, node_id: str, wav_path: Path) -
             detail = f"recording is {len(rec.samples) / rec.sample_rate:.2f} s, need at least " \
                      f"{spec.duration_s + MIN_TAIL_S:.2f} s"
     if failure:
-        state = store.record_point_upload(session_id, node_id, recording_path=None,
-                                          failure=failure, detail=detail)
+        try:
+            state = store.record_point_upload(session_id, node_id, recording_path=None,
+                                              failure=failure, detail=detail)
+        except PointClosed as closed:
+            return UploadOutcome("failed", closed.failure, closed.detail, closed.session_state)
         return UploadOutcome("failed", failure, detail, state)
 
     rel = Path("recordings") / session_id / f"{node_id}.wav"
@@ -98,6 +105,9 @@ def add_recording(store: Store, session_id: str, node_id: str, wav_path: Path) -
         state = store.record_point_upload(session_id, node_id, recording_path=rel.as_posix(),
                                           failure=None)
         os.replace(tmp, dest)
+    except PointClosed as closed:
+        Path(tmp).unlink(missing_ok=True)
+        return UploadOutcome("failed", closed.failure, closed.detail, closed.session_state)
     except BaseException:
         Path(tmp).unlink(missing_ok=True)
         raise

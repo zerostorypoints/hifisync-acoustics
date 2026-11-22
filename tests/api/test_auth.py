@@ -89,6 +89,15 @@ async def test_token_in_query_rejected(client, app_token):
     assert r.status_code == 200
 
 
+async def test_sweep_needs_no_token(client, app_token):
+    # A media renderer fetches the sweep itself and cannot send a header.
+    r = await client.get("/api/v1/sweep.wav?duration=2&repeats=1")
+    assert r.status_code == 200 and r.headers["content-type"] == "audio/wav"
+    r = await client.get(f"/api/v1/sweep.wav?duration=2&token={app_token}")
+    assert r.status_code == 400 and r.json()["error"]["code"] == "token_in_url"
+    assert (await client.get("/api/v1/rooms")).status_code == 401
+
+
 async def test_revoked_token_401(client, store, app_token):
     assert (await client.get("/api/v1/rooms", headers=bearer(app_token))).status_code == 200
     auth.revoke(store, "phone")

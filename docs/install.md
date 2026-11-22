@@ -24,7 +24,7 @@ docker compose -f compose.example.yaml up -d
 ```
 
 The compose file uses `network_mode: host`. The engine advertises itself over mDNS
-(`_hifisync-acoustics._tcp.local.`), and multicast does not reach a container on a bridge
+(`_hfs-acoustics._tcp.local.`), and multicast does not reach a container on a bridge
 network. Host networking does not work on Docker Desktop (macOS and Windows). Without host networking, publish the port instead (`-p 8765:8765`) and start the
 engine with `--no-zeroconf`; clients then need its address.
 

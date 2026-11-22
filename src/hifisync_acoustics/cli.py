@@ -83,7 +83,7 @@ def _cmd_token(args) -> int:
     store = Store.open(_data_dir(args))
     if args.token_command == "create":
         try:
-            token = auth.issue(store, args.name, role=args.role)
+            token = auth.issue(store, args.name, role=args.role, node_id=args.node)
         except ValueError as exc:
             print(f"error: {exc}", file=sys.stderr)
             return 1
@@ -92,15 +92,29 @@ def _cmd_token(args) -> int:
               file=sys.stderr)
         return 0
     if args.token_command == "list":
-        print("name role created revoked")
+        print("name role created revoked node")
         for t in store.list_tokens():
-            print(f"{t['name']} {t['role']} {t['created_at']} {t['revoked_at'] or '-'}")
+            print(f"{t['name']} {t['role']} {t['created_at']} {t['revoked_at'] or '-'} "
+                  f"{t['node_id'] or '-'}")
         return 0
     if auth.revoke(store, args.name):
         print(f"revoked {args.name!r}")
         return 0
     print(f"error: no active token named {args.name!r}", file=sys.stderr)
     return 1
+
+
+def _assign(value: str) -> tuple[str, str]:
+    point, sep, node = value.partition("=")
+    if not sep or not point or not node:
+        raise argparse.ArgumentTypeError("expected POINT=NODE")
+    return point, node
+
+
+def _cmd_measure(args) -> int:
+    from hifisync_acoustics.client import measure_main
+
+    return measure_main(args)
 
 
 def _parser() -> argparse.ArgumentParser:
@@ -126,6 +140,26 @@ def _parser() -> argparse.ArgumentParser:
     c.add_argument("case_dir")
     c.set_defaults(func=_cmd_compare)
 
+    m = sub.add_parser(
+        "measure", help="run one manual measurement session against a running engine",
+        allow_abbrev=False,
+        description="The token comes from $HIFISYNC_ACOUSTICS_TOKEN or --token-file.")
+    m.add_argument("--url", required=True, help="engine URL, for example http://host:8765")
+    m.add_argument("--room", required=True, help="room id")
+    m.add_argument("--assign", required=True, action="append", type=_assign,
+                   metavar="POINT=NODE", help="point id and node id; repeat for more points")
+    m.add_argument("--duration", type=float, default=6.0)
+    m.add_argument("--repeats", type=int, default=1)
+    m.add_argument("--start-window", type=float, default=10.0,
+                   help="seconds to start playback once the nodes record (0-30)")
+    m.add_argument("--play", help='player command, "{file}" is the sweep, e.g. "afplay {file}"')
+    m.add_argument("--upnp", metavar="RENDERER",
+                   help="play the sweep on a UPnP/DLNA renderer: a name it announces "
+                        "(e.g. H400) or its description URL; --url must be the engine's LAN address")
+    m.add_argument("--token-file", help="file holding the token")
+    m.add_argument("--yes", action="store_true", help="do not wait for Enter")
+    m.set_defaults(func=_cmd_measure)
+
     data_help = f"data directory (default: ${DATA_ENV})"
     v = sub.add_parser("serve", help="run the HTTP API")
     v.add_argument("--data", help=data_help)
@@ -138,7 +172,8 @@ def _parser() -> argparse.ArgumentParser:
     tsub = t.add_subparsers(dest="token_command", required=True)
     tc = tsub.add_parser("create", help="create a token and print it once")
     tc.add_argument("name")
-    tc.add_argument("--role", choices=("app", "ha"), default="app")
+    tc.add_argument("--role", choices=("app", "ha", "node"), default="app")
+    tc.add_argument("--node", help="node id the token is bound to (required for --role node)")
     tl = tsub.add_parser("list", help="list token names, roles and dates")
     tr = tsub.add_parser("revoke", help="revoke the token with this name")
     tr.add_argument("name")

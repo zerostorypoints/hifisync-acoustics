@@ -1,4 +1,4 @@
-"""Zeroconf (mDNS) advertisement of the engine: ``_hifisync-acoustics._tcp.local.``."""
+"""Zeroconf (mDNS) advertisement of the engine: ``_hfs-acoustics._tcp.local.``."""
 
 from __future__ import annotations
 
@@ -11,7 +11,7 @@ from zeroconf.asyncio import AsyncZeroconf
 
 from hifisync_acoustics import __version__
 
-SERVICE_TYPE = "_hifisync-acoustics._tcp.local."
+SERVICE_TYPE = "_hfs-acoustics._tcp.local."
 
 
 def _host() -> str:

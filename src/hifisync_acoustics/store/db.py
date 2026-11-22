@@ -1,4 +1,4 @@
-"""SQLite store: rooms, nodes, measurement points and calibrations.
+"""SQLite store: rooms, nodes, measurement points, calibrations, sessions and node commands.
 
 Each call opens its own connection (``check_same_thread=False``); the database
 is in WAL mode and a lock serialises writes. Migrations run by
@@ -22,13 +22,38 @@ import numpy as np
 
 from hifisync_acoustics.analysis.calibration import CalibrationCurve
 
-_MIGRATIONS = ["schema.sql", "schema_v2.sql", "schema_v3.sql"]  # index i migrates user_version i to i + 1
+_MIGRATIONS = ["schema.sql", "schema_v2.sql", "schema_v3.sql",
+               "schema_v4.sql"]  # index i migrates user_version i to i + 1
 
 
 class ManagedByHA(ValueError):
     """An app-sourced write tried to change a node's room or name owned by Home Assistant."""
 
     code = "managed_by_ha"
+
+
+class SessionNotAccepting(ValueError):
+    """The session's state does not allow the change (an upload, or arming it again)."""
+
+    code = "session_not_accepting"
+
+
+class CommandClosed(ValueError):
+    """The node command is ``done``, ``failed`` or ``expired`` and takes no more acks."""
+
+    code = "command_closed"
+
+
+class PointClosed(Exception):
+    """An upload for a point whose node command failed or expired. The point keeps its
+    failure; the attributes describe it as it stands."""
+
+    def __init__(self, failure: str | None, detail: str | None, session_state: str) -> None:
+        super().__init__(failure)
+        self.failure, self.detail, self.session_state = failure, detail, session_state
+
+
+OPEN_COMMAND_STATES = ("pending", "taken", "recording")
 
 
 @dataclass(frozen=True)
@@ -140,12 +165,13 @@ class Store:
     # nodes ---------------------------------------------------------------
 
     def upsert_node(self, node_id: str, *, esphome_name: str, firmware: str | None = None,
-                    capture: str | None = None, install_room_id: str | None = None,
+                    capture: bool | None = None, install_room_id: str | None = None,
                     install_x: float | None = None, install_y: float | None = None,
                     install_z: float | None = None, source: str = "app") -> dict[str, Any]:
         """Home Assistant owns a node's room and name once it has installed it: an
         ``app`` write that changes ``install_room_id`` or ``esphome_name`` of an
-        ``ha`` node raises :class:`ManagedByHA`. A ``ha`` write sets anything."""
+        ``ha`` node raises :class:`ManagedByHA`. A ``ha`` write sets anything. ``capture`` is
+        stored as ``'true'`` or ``'false'`` and read back as a boolean."""
         if source not in ("ha", "app"):
             raise ValueError(f"unknown source {source!r}")
         with self._write() as con:
@@ -166,18 +192,24 @@ class Store:
                 " install_room_id=excluded.install_room_id, install_x=excluded.install_x,"
                 " install_y=excluded.install_y, install_z=excluded.install_z,"
                 " install_source=excluded.install_source, updated_at=excluded.updated_at",
-                (node_id, esphome_name, firmware, capture, install_room_id, install_x,
-                 install_y, install_z, install_source, _now()))
-            return dict(con.execute("SELECT * FROM nodes WHERE id = ?", (node_id,)).fetchone())
+                (node_id, esphome_name, firmware,
+                 None if capture is None else ("true" if capture else "false"),
+                 install_room_id, install_x, install_y, install_z, install_source, _now()))
+            return _node(con.execute("SELECT * FROM nodes WHERE id = ?", (node_id,)).fetchone())
 
     def get_node(self, node_id: str) -> dict[str, Any] | None:
         with closing(self._connect()) as con:
             row = con.execute("SELECT * FROM nodes WHERE id = ?", (node_id,)).fetchone()
-        return None if row is None else dict(row)
+        return None if row is None else _node(row)
 
     def list_nodes(self) -> list[dict[str, Any]]:
         with closing(self._connect()) as con:
-            return [dict(r) for r in con.execute("SELECT * FROM nodes ORDER BY esphome_name, id")]
+            return [_node(r) for r in con.execute("SELECT * FROM nodes ORDER BY esphome_name, id")]
+
+    def touch_node(self, node_id: str) -> None:
+        """Record that the node was just heard from; does nothing for an unknown node."""
+        with self._write() as con:
+            con.execute("UPDATE nodes SET last_seen_at = ? WHERE id = ?", (_now(), node_id))
 
     # points --------------------------------------------------------------
 
@@ -229,26 +261,28 @@ class Store:
 
     # tokens --------------------------------------------------------------
 
-    def add_token(self, name: str, digest: str, role: str) -> None:
+    def add_token(self, name: str, digest: str, role: str, node_id: str | None = None) -> None:
         """Store a token's digest; the name must not belong to another active token."""
         with self._write() as con:
             if con.execute("SELECT 1 FROM tokens WHERE name = ? AND revoked_at IS NULL",
                            (name,)).fetchone():
                 raise ValueError(f"an active token named {name!r} exists")
-            con.execute("INSERT INTO tokens (id, name, digest, created_at, role)"
-                        " VALUES (?, ?, ?, ?, ?)", (_uuid(), name, digest, _now(), role))
+            con.execute("INSERT INTO tokens (id, name, digest, created_at, role, node_id)"
+                        " VALUES (?, ?, ?, ?, ?, ?)",
+                        (_uuid(), name, digest, _now(), role, node_id))
 
     def active_tokens(self) -> list[dict[str, Any]]:
-        """Name, role and digest of every token that is not revoked."""
+        """Name, role, node id and digest of every token that is not revoked."""
         with closing(self._connect()) as con:
             return [dict(r) for r in con.execute(
-                "SELECT name, role, digest FROM tokens WHERE revoked_at IS NULL")]
+                "SELECT name, role, node_id, digest FROM tokens WHERE revoked_at IS NULL")]
 
     def list_tokens(self) -> list[dict[str, Any]]:
-        """Name, role, created and revoked time of every token; never the digest."""
+        """Name, role, node id, created and revoked time of every token; never the digest."""
         with closing(self._connect()) as con:
             return [dict(r) for r in con.execute(
-                "SELECT name, role, created_at, revoked_at FROM tokens ORDER BY created_at")]
+                "SELECT name, role, node_id, created_at, revoked_at FROM tokens"
+                " ORDER BY created_at")]
 
     def revoke_token(self, name: str) -> int:
         with self._write() as con:
@@ -308,37 +342,130 @@ class Store:
         """Mark the node's point ``uploaded`` (or ``failed`` with ``failure``) and, once no point
         is pending, move the session to ``analysing``; otherwise to ``recording``. Atomic.
         Returns the session state. Raises KeyError for an unknown session or node and
-        ValueError when the session no longer accepts recordings. When no point is pending and
-        none is ``uploaded`` (all failed) the session is finished as failed/all_points_failed."""
+        SessionNotAccepting when the session no longer accepts recordings. When no point is
+        pending and none is ``uploaded`` (all failed) the session is finished as
+        failed/all_points_failed.
+
+        The node's open command becomes ``done``. A point whose command failed or expired is
+        final: the upload raises :class:`PointClosed` and changes nothing."""
         with self._write() as con:
             s = con.execute("SELECT state FROM sessions WHERE id = ?", (session_id,)).fetchone()
             if s is None:
                 raise KeyError(session_id)
             if s["state"] not in ("created", "recording"):
-                raise ValueError(f"session {session_id} is {s['state']}, not accepting recordings")
-            cur = con.execute(
-                "UPDATE session_points SET state = ?, failure = ?, failure_detail = ?,"
-                " recording_path = ? WHERE session_id = ? AND node_id = ?",
-                ("failed" if failure else "uploaded", failure, detail if failure else None,
-                 recording_path, session_id, node_id))
-            if cur.rowcount == 0:
-                raise KeyError(node_id)
-            pending = con.execute(
-                "SELECT COUNT(*) FROM session_points WHERE session_id = ? AND state = 'pending'",
-                (session_id,)).fetchone()[0]
-            uploaded = con.execute(
-                "SELECT COUNT(*) FROM session_points WHERE session_id = ? AND state = 'uploaded'",
-                (session_id,)).fetchone()[0]
-            failure_code = None
-            if pending:
-                state = "recording"
-            elif uploaded:
-                state = "analysing"
-            else:
-                state, failure_code = "failed", "all_points_failed"
-            con.execute("UPDATE sessions SET state = ?, failure = ?, updated_at = ?"
-                        " WHERE id = ?", (state, failure_code, _now(), session_id))
+                raise SessionNotAccepting(
+                    f"session {session_id} is {s['state']}, not accepting recordings")
+            cmd = con.execute(
+                "SELECT state FROM node_commands WHERE session_id = ? AND node_id = ?"
+                " ORDER BY created_at DESC, rowid DESC LIMIT 1", (session_id, node_id)).fetchone()
+            if cmd is not None and cmd["state"] in ("failed", "expired"):
+                p = con.execute("SELECT failure, failure_detail FROM session_points"
+                                " WHERE session_id = ? AND node_id = ?",
+                                (session_id, node_id)).fetchone()
+                raise PointClosed(p["failure"], p["failure_detail"], s["state"])
+            state = _settle_point(con, session_id, node_id, recording_path=recording_path,
+                                  failure=failure, detail=detail)
+            con.execute("UPDATE node_commands SET state = 'done', updated_at = ?"
+                        " WHERE session_id = ? AND node_id = ? AND state IN (?, ?, ?)",
+                        (_now(), session_id, node_id, *OPEN_COMMAND_STATES))
         return state
+
+    # node commands -------------------------------------------------------
+
+    def arm_session(self, session_id: str, commands: list[tuple[str, str, dict[str, Any]]]
+                    ) -> list[dict[str, Any]]:
+        """Insert one pending ``record`` command per ``(command_id, node_id, payload)`` and move
+        the session to ``recording``. Raises KeyError for an unknown session and
+        SessionNotAccepting unless it is ``created`` and has no commands yet."""
+        now = _now()
+        with self._write() as con:
+            s = con.execute("SELECT state FROM sessions WHERE id = ?", (session_id,)).fetchone()
+            if s is None:
+                raise KeyError(session_id)
+            armed = con.execute("SELECT 1 FROM node_commands WHERE session_id = ? LIMIT 1",
+                                (session_id,)).fetchone()
+            if s["state"] != "created" or armed:
+                raise SessionNotAccepting(f"session {session_id} is {s['state']}, not armable")
+            for command_id, node_id, payload in commands:
+                con.execute(
+                    "INSERT INTO node_commands (id, node_id, session_id, kind, payload_json,"
+                    " state, created_at, updated_at) VALUES (?, ?, ?, 'record', ?, 'pending',"
+                    " ?, ?)", (command_id, node_id, session_id, json.dumps(payload), now, now))
+            con.execute("UPDATE sessions SET state = 'recording', updated_at = ? WHERE id = ?",
+                        (now, session_id))
+        return self.list_commands(session_id)
+
+    def list_commands(self, session_id: str) -> list[dict[str, Any]]:
+        with closing(self._connect()) as con:
+            return [_command(r) for r in con.execute(
+                "SELECT * FROM node_commands WHERE session_id = ? ORDER BY rowid",
+                (session_id,))]
+
+    def open_commands(self) -> list[dict[str, Any]]:
+        """Every command in ``pending``, ``taken`` or ``recording``."""
+        with closing(self._connect()) as con:
+            return [_command(r) for r in con.execute(
+                "SELECT * FROM node_commands WHERE state IN (?, ?, ?) ORDER BY rowid",
+                OPEN_COMMAND_STATES)]
+
+    def take_command(self, node_id: str) -> dict[str, Any] | None:
+        """Atomically move the node's oldest pending command to ``taken``."""
+        now = _now()
+        with self._write() as con:
+            row = con.execute(
+                "SELECT id FROM node_commands WHERE node_id = ? AND state = 'pending'"
+                " ORDER BY created_at, rowid LIMIT 1", (node_id,)).fetchone()
+            if row is None:
+                return None
+            con.execute("UPDATE node_commands SET state = 'taken', taken_at = ?, updated_at = ?"
+                        " WHERE id = ?", (now, now, row["id"]))
+            return _command(con.execute("SELECT * FROM node_commands WHERE id = ?",
+                                        (row["id"],)).fetchone())
+
+    def ack_command(self, node_id: str, command_id: str, state: str,
+                    detail: str | None = None) -> tuple[dict[str, Any], str | None]:
+        """Record the node's ack. ``recording`` moves the command to ``recording``;
+        ``failed`` fails it and fails its point ``node_failed`` with ``detail``. Returns the
+        command and, for ``failed``, the session state after the point failed (None when the
+        session no longer accepts recordings). Raises KeyError unless the command belongs to
+        ``node_id`` and CommandClosed when it is done, failed or expired."""
+        if state not in ("recording", "failed"):
+            raise ValueError(f"unknown ack state {state!r}")
+        now = _now()
+        with self._write() as con:
+            row = con.execute("SELECT * FROM node_commands WHERE id = ? AND node_id = ?",
+                              (command_id, node_id)).fetchone()
+            if row is None:
+                raise KeyError(command_id)
+            if row["state"] not in OPEN_COMMAND_STATES:
+                raise CommandClosed(f"command {command_id} is {row['state']}")
+            session_state = None
+            if state == "failed":
+                session_state = _fail_open_point(con, row["session_id"], node_id,
+                                                 "node_failed", detail)
+            con.execute(
+                "UPDATE node_commands SET state = ?, taken_at = COALESCE(taken_at, ?),"
+                " updated_at = ?, detail = ? WHERE id = ?",
+                (state, now, now, detail if state == "failed" else None, command_id))
+            cmd = _command(con.execute("SELECT * FROM node_commands WHERE id = ?",
+                                       (command_id,)).fetchone())
+        return cmd, session_state
+
+    def expire_command(self, command_id: str, from_state: str, stage: str,
+                       point_detail: str) -> tuple[bool, str | None]:
+        """If the command is still in ``from_state``, expire it with ``stage`` as its detail
+        and fail its point ``node_offline`` with ``point_detail``, in one transaction.
+        Returns (expired, session state after the point failed or None)."""
+        with self._write() as con:
+            row = con.execute("SELECT * FROM node_commands WHERE id = ? AND state = ?",
+                              (command_id, from_state)).fetchone()
+            if row is None:
+                return False, None
+            session_state = _fail_open_point(con, row["session_id"], row["node_id"],
+                                             "node_offline", point_detail)
+            con.execute("UPDATE node_commands SET state = 'expired', updated_at = ?, detail = ?"
+                        " WHERE id = ?", (_now(), stage, command_id))
+        return True, session_state
 
     def claim_analysis(self, session_id: str) -> bool:
         """Atomically claim an ``analysing`` session for one worker; False if not claimable."""
@@ -378,6 +505,62 @@ class Store:
                 "UPDATE sessions SET state = 'failed', failure = ?, updated_at = ?"
                 " WHERE state = 'analysing'", (failure, _now()))
             return cur.rowcount
+
+
+def _settle_point(con: sqlite3.Connection, session_id: str, node_id: str, *,
+                  recording_path: str | None, failure: str | None, detail: str | None) -> str:
+    """Set the node's point ``uploaded`` or ``failed``, then the session state from the
+    pending and uploaded counts. The one path by which a point leaves ``pending`` before
+    analysis: uploads, node failures and expiry all use it. Returns the session state."""
+    cur = con.execute(
+        "UPDATE session_points SET state = ?, failure = ?, failure_detail = ?,"
+        " recording_path = ? WHERE session_id = ? AND node_id = ?",
+        ("failed" if failure else "uploaded", failure, detail if failure else None,
+         recording_path, session_id, node_id))
+    if cur.rowcount == 0:
+        raise KeyError(node_id)
+    pending = con.execute(
+        "SELECT COUNT(*) FROM session_points WHERE session_id = ? AND state = 'pending'",
+        (session_id,)).fetchone()[0]
+    uploaded = con.execute(
+        "SELECT COUNT(*) FROM session_points WHERE session_id = ? AND state = 'uploaded'",
+        (session_id,)).fetchone()[0]
+    failure_code = None
+    if pending:
+        state = "recording"
+    elif uploaded:
+        state = "analysing"
+    else:
+        state, failure_code = "failed", "all_points_failed"
+    con.execute("UPDATE sessions SET state = ?, failure = ?, updated_at = ?"
+                " WHERE id = ?", (state, failure_code, _now(), session_id))
+    return state
+
+
+def _fail_open_point(con: sqlite3.Connection, session_id: str, node_id: str, failure: str,
+                     detail: str | None) -> str | None:
+    """Fail the node's point while it is still ``pending`` in a session that accepts
+    recordings; otherwise leave it. Returns the session state, or None if nothing changed."""
+    s = con.execute("SELECT state FROM sessions WHERE id = ?", (session_id,)).fetchone()
+    p = con.execute("SELECT state FROM session_points WHERE session_id = ? AND node_id = ?",
+                    (session_id, node_id)).fetchone()
+    if s is None or p is None or s["state"] not in ("created", "recording") \
+            or p["state"] != "pending":
+        return None
+    return _settle_point(con, session_id, node_id, recording_path=None, failure=failure,
+                         detail=detail)
+
+
+def _command(row: sqlite3.Row) -> dict[str, Any]:
+    d = dict(row)
+    d["payload"] = json.loads(d.pop("payload_json"))
+    return d
+
+
+def _node(row: sqlite3.Row) -> dict[str, Any]:
+    d = dict(row)
+    d["capture"] = None if d["capture"] is None else d["capture"] == "true"
+    return d
 
 
 def _room(row: sqlite3.Row) -> dict[str, Any]:

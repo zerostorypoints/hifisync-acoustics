@@ -15,7 +15,7 @@ def _curve(sens=-30.5):
 
 
 def _node(store, node_id="n1", **kw):
-    args = dict(esphome_name="mic-a", firmware="1.0", capture="i2s",
+    args = dict(esphome_name="mic-a", firmware="1.0", capture=True,
                 install_room_id=None, install_x=None, install_y=None, install_z=None)
     args.update(kw)
     return store.upsert_node(node_id, **args)
@@ -34,10 +34,10 @@ def test_open_creates_layout(tmp_path):
             "session_points", "tokens"} <= tables
 
 
-def test_migration_from_empty_sets_user_version_3(tmp_path):
+def test_migration_from_empty_sets_user_version_4(tmp_path):
     Store.open(tmp_path)
     con = sqlite3.connect(tmp_path / "engine.sqlite3")
-    assert con.execute("PRAGMA user_version").fetchone()[0] == 3
+    assert con.execute("PRAGMA user_version").fetchone()[0] == 4
 
 
 def test_calibration_versions_increment_per_node(tmp_path):
@@ -165,7 +165,7 @@ def test_migrates_v1_database_with_data(tmp_path):
 
     s = Store.open(tmp_path)
     con = sqlite3.connect(tmp_path / "engine.sqlite3")
-    assert con.execute("PRAGMA user_version").fetchone()[0] == 3
+    assert con.execute("PRAGMA user_version").fetchone()[0] == 4
     cols = {t: {r[1] for r in con.execute(f"PRAGMA table_info({t})")}
             for t in ("session_points", "sessions", "tokens")}
     assert "failure_detail" in cols["session_points"]
@@ -177,3 +177,30 @@ def test_migrates_v1_database_with_data(tmp_path):
     sess = s.get_session("s1")
     assert sess["state"] == "done" and sess["analysis_claimed"] == 0
     assert sess["points"][0]["failure_detail"] is None
+
+
+def test_v4_adds_node_columns(tmp_path):
+    from hifisync_acoustics.store.db import _MIGRATIONS, _migration_sql, _split_statements
+
+    con = sqlite3.connect(tmp_path / "engine.sqlite3")
+    for name in _MIGRATIONS[:3]:
+        for stmt in _split_statements(_migration_sql(name)):
+            con.execute(stmt)
+    con.execute("PRAGMA user_version = 3")
+    con.execute("INSERT INTO tokens (id, name, digest, created_at, role)"
+                " VALUES ('t1', 'old', 'abc', 't', 'ha')")
+    for node_id, capture in (("n1", "i2s"), ("n2", "false"), ("n3", None), ("n4", "true")):
+        con.execute("INSERT INTO nodes (id, esphome_name, capture, install_source, updated_at)"
+                    " VALUES (?, ?, ?, 'app', 't')", (node_id, node_id, capture))
+    con.commit()
+    con.close()
+
+    s = Store.open(tmp_path)
+    assert {n["id"]: n["capture"] for n in s.list_nodes()} == {
+        "n1": True, "n2": False, "n3": None, "n4": True}
+    con = sqlite3.connect(tmp_path / "engine.sqlite3")
+    assert con.execute("PRAGMA user_version").fetchone()[0] == 4
+    assert "node_id" in {r[1] for r in con.execute("PRAGMA table_info(tokens)")}
+    assert "last_seen_at" in {r[1] for r in con.execute("PRAGMA table_info(nodes)")}
+    assert con.execute("SELECT name, role, node_id FROM tokens").fetchall() == [
+        ("old", "ha", None)]
