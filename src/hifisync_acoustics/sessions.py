@@ -18,6 +18,7 @@ from pathlib import Path
 
 from hifisync_acoustics.analysis.modes import RoomDimensions
 from hifisync_acoustics.analysis.sweep import SweepSpec, generate_sweep
+from hifisync_acoustics.messages import public_message
 from hifisync_acoustics.report import analyse_recording
 from hifisync_acoustics.store.db import Store
 from hifisync_acoustics.wav import RecordingError, read_wav
@@ -72,7 +73,7 @@ def add_recording(store: Store, session_id: str, node_id: str, wav_path: Path) -
     try:
         rec = read_wav(Path(wav_path))
     except RecordingError as exc:
-        failure, detail = exc.code, str(exc)
+        failure, detail = exc.code, public_message(str(exc), {str(wav_path): "recording"})
     else:
         if rec.sample_rate != spec.sample_rate:
             failure = "rate_mismatch"
@@ -131,8 +132,9 @@ def _analyse_points(store: Store, session: dict) -> None:
     for point in session["points"]:
         if point["state"] != "uploaded":
             continue
+        stored = store.data_dir / point["recording_path"]
         try:
-            rec = read_wav(store.data_dir / point["recording_path"])
+            rec = read_wav(stored)
             if rec.sample_rate != spec.sample_rate:
                 raise RecordingError(
                     "rate_mismatch", f"recording is {rec.sample_rate} Hz but the sweep was "
@@ -148,7 +150,8 @@ def _analyse_points(store: Store, session: dict) -> None:
                                        detail=f"preflight: {result.preflight.code}")
         except RecordingError as exc:
             store.set_point_result(session_id, point["point_id"], state="failed",
-                                   failure=exc.code, result=None, detail=str(exc))
+                                   failure=exc.code, result=None,
+                                   detail=public_message(str(exc), {str(stored): "recording"}))
         except Exception as exc:
             log.error("point %s of session %s failed: %s", point["point_id"], session_id,
                       type(exc).__name__)

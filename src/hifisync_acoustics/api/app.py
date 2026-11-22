@@ -45,6 +45,7 @@ from hifisync_acoustics.analysis.ir import impulse_response
 from hifisync_acoustics.analysis.response import frequency_response
 from hifisync_acoustics.analysis.sweep import SweepSpec, generate_sweep
 from hifisync_acoustics.api import auth
+from hifisync_acoustics.messages import public_message
 from hifisync_acoustics.sessions import (
     _safe_name,
     add_recording,
@@ -66,7 +67,6 @@ _TOKEN_PARAMS = {"token", "access_token", "bearer", "authorization", "auth", "ap
 _TOKEN_SCOPE_KEY = "hifisync.token"
 # The shape of ``secrets.token_urlsafe(32)``: 43 characters of the URL-safe alphabet.
 _TOKEN_SHAPE = re.compile(r"(?<![\w-])[A-Za-z0-9_-]{43}(?![\w-])")
-_ABS_PATH = re.compile(r"(?:[A-Za-z]:)?(?:[/\\][^\s/\\'\"]+){2,}")
 _NODE_FIELDS = {"esphome_name": str, "firmware": str, "capture": str, "install_room_id": str,
                 "install_x": float, "install_y": float, "install_z": float}
 _STATUS_CODES = {400: "bad_request", 401: "unauthorized", 404: "not_found",
@@ -82,14 +82,6 @@ class ApiError(Exception):
 def _error_response(status: int, code: str, message: str, headers: dict | None = None):
     return JSONResponse({"error": {"code": code, "message": message}}, status_code=status,
                         headers=headers)
-
-
-def public_message(message: str, labels: dict[str, str] | None = None) -> str:
-    """``message`` with known paths replaced by their labels and any other absolute path
-    replaced by ``<file>``."""
-    for path, label in (labels or {}).items():
-        message = message.replace(path, label)
-    return _ABS_PATH.sub("<file>", message)
 
 
 # middleware ---------------------------------------------------------------

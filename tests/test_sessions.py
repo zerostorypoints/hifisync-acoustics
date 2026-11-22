@@ -1,4 +1,6 @@
 import json
+import os
+import re
 import threading
 import zipfile
 
@@ -184,6 +186,32 @@ def test_export_contains_results(env, tmp_path):
         assert meta["id"] == sid and meta["state"] == "done"
         res = json.loads(z.read(f"results/{p1}.json"))
         assert res["preflight"]["ok"] is True
+
+
+def test_export_of_unreadable_recording_has_no_paths(env, tmp_path):
+    store = env[0]
+    sid = _session(env)
+    add_recording(store, sid, "n1", _wav(tmp_path, "good"))
+    add_recording(store, sid, "n2", _wav(tmp_path, "good2", seed=1))
+    stored = store.data_dir / _points(store, sid)["n1"]["recording_path"]
+    stored.chmod(0)
+    try:
+        if os.access(stored, os.R_OK):  # running as root: permissions are not enforced
+            stored.unlink()
+        analyse_session(store, sid)
+    finally:
+        if stored.exists():
+            stored.chmod(0o644)
+    point = _points(store, sid)["n1"]
+    assert point["state"] == "failed" and point["failure_detail"]
+    with zipfile.ZipFile(export_session(store, sid)) as z:
+        text = z.read("session.json").decode()
+    assert str(store.data_dir) not in text and str(tmp_path) not in text
+    # No absolute path; relative ``recordings/<session>/<node>.wav`` paths are fine.
+    assert not re.search(r"(?<![\w.])(?:/[^\s/'\"]+){2,}", text)
+    detail = next(p["failure_detail"] for p in json.loads(text)["points"]
+                  if p["node_id"] == "n1")
+    assert "recording" in detail
 
 
 def test_rejects_unknown_node_and_bad_state(env, tmp_path):
