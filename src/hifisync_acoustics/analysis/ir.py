@@ -3,12 +3,13 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from pathlib import Path
 
 import numpy as np
 from scipy.signal import fftconvolve
 
 from hifisync_acoustics.analysis.sweep import Sweep
-from hifisync_acoustics.wav import Recording, RecordingError
+from hifisync_acoustics.wav import Recording, RecordingError, read_wav
 
 PRE_PEAK_S = 0.005
 MIN_TAIL_S = 1.0
@@ -85,3 +86,13 @@ def impulse_response(rec: Recording, sweep: Sweep, repeat: int | None = None) ->
         acc += y[p - pre : p - pre + length]
     acc /= len(peaks)
     return ImpulseResponse(samples=acc, sample_rate=fs, peak_index=int(np.argmax(np.abs(acc))))
+
+
+def ir_from_wav(path: Path) -> ImpulseResponse:
+    """An impulse response stored as a WAV file: the peak is the largest |sample|,
+    PRE_PEAK_S of lead-in is kept before it and everything after it is kept."""
+    rec = read_wav(path)
+    x = rec.samples
+    peak = int(np.argmax(np.abs(x)))
+    start = max(peak - int(PRE_PEAK_S * rec.sample_rate), 0)
+    return ImpulseResponse(samples=x[start:].copy(), sample_rate=rec.sample_rate, peak_index=peak - start)
