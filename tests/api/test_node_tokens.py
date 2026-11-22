@@ -51,6 +51,20 @@ async def test_node_token_self_report(client, node_token):
     assert r.json()["firmware"] == "0.1.0"
 
 
+async def test_node_registers_when_ha_owns_its_name(client, node_token, ha_token):
+    """Home Assistant renamed the node: the node's own name is ignored, not refused, and its
+    firmware and capture still update."""
+    r = await client.put("/api/v1/nodes/node-a", json={"esphome_name": "kitchen-mic"},
+                         headers=bearer(ha_token))
+    assert r.status_code == 200, r.text
+    r = await client.put("/api/v1/nodes/node-a", headers=bearer(node_token), json={
+        "esphome_name": "node-a", "firmware": "0.2.0", "capture": True})
+    assert r.status_code == 200, r.text
+    n = r.json()
+    assert (n["esphome_name"], n["firmware"], n["install_source"]) == \
+        ("kitchen-mic", "0.2.0", "ha")
+
+
 async def test_node_token_cannot_set_room(client, node_token, app_token):
     await client.put("/api/v1/rooms/living", headers=bearer(app_token),
                      json={"name": "Living room"})

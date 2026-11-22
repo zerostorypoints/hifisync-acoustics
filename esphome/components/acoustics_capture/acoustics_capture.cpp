@@ -145,7 +145,7 @@ void AcousticsCaptureComponent::worker_task_(void *arg) {
 void AcousticsCaptureComponent::worker_loop_() {
   uint8_t attempt = 0;
   while (true) {
-    if (network::is_connected() && this->self_report_())
+    if (network::is_connected() && core::register_then_poll(this->self_report_()))
       break;
     this->set_state_(CaptureState::ERROR);
     task_delay_ms(core::backoff_ms(attempt));
@@ -178,7 +178,7 @@ void AcousticsCaptureComponent::worker_loop_() {
   }
 }
 
-bool AcousticsCaptureComponent::self_report_() {
+int AcousticsCaptureComponent::self_report_() {
   const std::string name = App.get_name().str();
   auto body = json::build_json([&name](JsonObject root) {
     root["esphome_name"] = name;
@@ -191,10 +191,12 @@ bool AcousticsCaptureComponent::self_report_() {
                      nullptr, 0, REQUEST_TIMEOUT_MS, nullptr);
   if (status == 200) {
     ESP_LOGI(TAG, "Registered as %s (esphome_name %s, firmware %s)", this->node_id_.c_str(), name.c_str(), FIRMWARE);
-    return true;
+  } else if (core::register_then_poll(status)) {
+    ESP_LOGW(TAG, "Register refused: HTTP %d; polling anyway", status);
+  } else {
+    ESP_LOGW(TAG, "Register failed: HTTP %d", status);
   }
-  ESP_LOGW(TAG, "Register failed: HTTP %d", status);
-  return false;
+  return status;
 }
 
 int AcousticsCaptureComponent::poll_(Command &command) {

@@ -445,6 +445,11 @@ def create_app(store: Store, *, analyse_inline: bool = False,
                 fields[k] = _number(v, k)
             else:
                 fields[k] = _text(v, k)
+        if (role(request) == "node" and current.get("install_source") == "ha"
+                and fields["esphome_name"] != current["esphome_name"]):
+            # Home Assistant owns the name: the node's own report of it is ignored, so the
+            # node still registers and its firmware and capture still update.
+            fields["esphome_name"] = current["esphome_name"]
         if fields["esphome_name"] is None:
             raise ApiError(400, "bad_request", "a new node needs esphome_name")
         if fields["install_room_id"] is not None and store.get_room(fields["install_room_id"]) \

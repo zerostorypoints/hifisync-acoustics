@@ -65,4 +65,15 @@ inline uint32_t backoff_ms(uint8_t attempt) {
   return ms > BACKOFF_MAX_MS ? BACKOFF_MAX_MS : ms;
 }
 
+// Whether the worker goes on to polling after a registration answer (HTTP status, or <= 0 for a
+// network error). 2xx goes on. 401 and 403 mean the token is wrong: back off and register again.
+// Another 4xx is logged and polling goes on, so a refused registration (for example a name that
+// Home Assistant owns on an older engine) does not stop the node. A network error, 3xx or 5xx
+// backs off and registers again.
+inline bool register_then_poll(int status) {
+  if (status >= 200 && status < 300) return true;
+  if (status == 401 || status == 403) return false;
+  return status >= 400 && status < 500;
+}
+
 }  // namespace acoustics_capture_core

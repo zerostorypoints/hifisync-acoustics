@@ -29,7 +29,8 @@ hifisync-acoustics token revoke NAME
 - Two active tokens cannot share a name. A revoked name can be reused.
 - Role `ha` is for the Home Assistant integration. Once it has written a node, the room and
   name of that node belong to Home Assistant, and an `app` token that changes them gets 409
-  `managed_by_ha`. Role `app` is for every other client.
+  `managed_by_ha`. A `node` token's `esphome_name` for such a node is ignored instead, and
+  its `firmware` and `capture` still change. Role `app` is for every other client.
 - Role `node` is for a measurement node and is bound to one node id: `token create NAME --role
   node --node NODE_ID`. `--node` is required for role `node` and refused for the others.
   A `node` token may call only:
@@ -211,7 +212,9 @@ in the URL. Every request it makes on its own node sets the node's `last_seen_at
 
 1. **Register.** At start, `PUT /api/v1/nodes/{own}` with
    `{"esphome_name": "node-a", "firmware": "0.1.0", "capture": true}`. The answer is 200 with
-   the node.
+   the node. Once Home Assistant has written the node, the engine keeps its name and ignores
+   `esphome_name`. On a network error, 401, 403 or a 5xx answer, register again after a
+   back-off; on another 4xx, log it and go on to polling.
 2. **Poll.** Loop on `GET /api/v1/nodes/{own}/commands/next?wait=25`. `wait` is an integer
    from 1 to 30 seconds, default 25; another value answers 400 `bad_request`. The engine
    holds the request until a command is available or `wait` seconds pass:

@@ -84,7 +84,8 @@ version. That is enough to create the node. Its room and install position are se
 
 - A worker task on core 0 (8 KiB stack) starts when the network first connects. It does all
   HTTP; each request opens and closes its own connection.
-- It registers, retrying with back-off (1, 2, 4 … 30 s) until the engine answers 200.
+- It registers. A network error, 401, 403 or a 5xx answer is retried with back-off (1, 2, 4 …
+  30 s). Another 4xx is logged and the node goes on to polling.
 - It then polls `GET /api/v1/nodes/{node_id}/commands/next?wait=<poll_wait>`. A 204 polls
   again at once; a network error or another status backs off.
 - For a `record` command it checks `capture_s` against `max_capture`, checks the microphone

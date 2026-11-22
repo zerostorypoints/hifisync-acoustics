@@ -58,6 +58,19 @@ int main(int argc, char **argv) {
   const uint32_t expect[] = {1000, 2000, 4000, 8000, 16000, 30000};
   for (uint8_t i = 0; i < 6; i++) CHECK(backoff_ms(i) == expect[i]);
   CHECK(backoff_ms(7) == 30000);
+
+  CHECK(register_then_poll(200));
+  CHECK(register_then_poll(204));
+  CHECK(register_then_poll(409));
+  CHECK(register_then_poll(400));
+  CHECK(register_then_poll(404));
+  CHECK(!register_then_poll(401));
+  CHECK(!register_then_poll(403));
+  CHECK(!register_then_poll(500));
+  CHECK(!register_then_poll(503));
+  CHECK(!register_then_poll(302));
+  CHECK(!register_then_poll(-1));
+  CHECK(!register_then_poll(0));
   CHECK(backoff_ms(255) == 30000);
 
   return failures == 0 ? 0 : 1;
