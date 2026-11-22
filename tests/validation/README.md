@@ -29,10 +29,9 @@ with its attribution in `SOURCE.md` and `NOTICE`; see the README there.
 Recordings of a home stay out of this repository. Keep the case directory
 anywhere outside it.
 
-1. Make the impulse response. Either use the engine's own result or
-   deconvolve the recording in REW. For `compare-rew` the case needs an
-   `ir.wav`: export the IR from REW (File > Export > Impulse response as WAV),
-   so both programs analyse the same samples.
+1. Get the impulse response as `ir.wav`: deconvolve the recording in REW and
+   export the IR (File > Export > Impulse response as WAV), so both programs
+   analyse the same samples.
 2. In REW import that WAV (File > Import impulse response).
 3. Export the FR with 1/6 smoothing: File > Export > Export measurement as
    text. Save as `rew_fr.txt`. Repeat with smoothing off for
