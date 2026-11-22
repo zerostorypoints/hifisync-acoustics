@@ -161,7 +161,10 @@ async def test_sweep_wav_peak_minus_12(client, app_token):
     assert r.status_code == 200 and r.headers["content-type"] == "audio/wav"
     rate, data = wavfile.read(io.BytesIO(r.content))
     assert rate == 48000 and data.dtype == np.int16
-    assert len(data) == int(2 * (2.0 * 48000) + 2.0 * 48000)
+    # 1.0 s of digital silence, then two 2 s sweeps with 2 s between them.
+    assert len(data) == int(48000 + 2 * (2.0 * 48000) + 2.0 * 48000)
+    assert not np.any(data[:48000])
+    assert np.any(data[48000 : 48000 + 4800])
     peak_dbfs = 20 * np.log10(np.max(np.abs(data.astype(float))) / 32768)
     assert -12.05 < peak_dbfs <= -12.0
     r = await client.get("/api/v1/sweep.wav?duration=abc", headers=bearer(app_token))

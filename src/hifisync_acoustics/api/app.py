@@ -63,6 +63,7 @@ access_log = logging.getLogger("hifisync_acoustics.api.access")
 API = "/api/v1"
 MAX_UPLOAD_BYTES = 200 * 1024 * 1024
 MIN_SWEEP_S, MAX_SWEEP_S, MAX_REPEATS = 0.5, 60.0, 10
+SWEEP_LEAD_S = 1.0  # digital silence before the sweep in sweep.wav
 _TOKEN_PARAMS = {"token", "access_token", "bearer", "authorization", "auth", "api_key",
                  "apikey", "key"}
 _TOKEN_SCOPE_KEY = "hifisync.token"
@@ -299,7 +300,10 @@ def create_app(store: Store, *, analyse_inline: bool = False,
                            _parse_int(q.get("repeats"), "repeats", 1))
 
         def render() -> bytes:
-            signal = generate_sweep(spec).signal
+            # Leading silence gives a recording started before playback its noise-only
+            # lead-in (pre-flight needs at least MIN_LEAD_S of it).
+            signal = np.concatenate([np.zeros(int(SWEEP_LEAD_S * spec.sample_rate)),
+                                     generate_sweep(spec).signal])
             buf = io.BytesIO()
             # Truncation toward zero keeps the file peak at or below the sweep's cap.
             pcm = np.trunc(signal * 32768).astype(np.int16)

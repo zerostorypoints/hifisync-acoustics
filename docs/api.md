@@ -59,8 +59,9 @@ No token. `{"version": "0.1.0", "api": 1}`.
 
 ### `GET /sweep.wav?duration=6&repeats=1`
 
-The measurement sweep as 16-bit PCM WAV at 48 kHz: 20 Hz to 20 kHz, peak at most −12 dBFS,
-with 2 s of silence between repeats. `duration` is 0.5 to 60 s, `repeats` 1 to 10.
+The measurement sweep as 16-bit PCM WAV at 48 kHz: 1.0 s of digital silence, then the sweep
+from 20 Hz to 20 kHz, peak at most −12 dBFS, with 2 s of silence between repeats. `duration`
+is 0.5 to 60 s, `repeats` 1 to 10.
 
 ### Rooms and points
 
@@ -134,8 +135,10 @@ Session states: `created`, `recording`, `analysing`, `done`, `failed`. Point sta
    "session_state": "recording"}
   ```
 
-  A recording that cannot be used (`unsupported_format`, `rate_mismatch`, `too_short`) fails
-  its point in this answer. A session that no longer accepts recordings answers 409
+  A recording needs at least 0.25 s of noise-only lead-in before the sweep; without it the
+  point fails `no_signal` in analysis. Starting the recording before playing `sweep.wav`
+  satisfies this, because the file begins with 1.0 s of silence. A recording that cannot be
+  used (`unsupported_format`, `rate_mismatch`, `too_short`) fails its point in this answer. A session that no longer accepts recordings answers 409
   `session_not_accepting`. When no point is left pending, `session_state` is `analysing` and
   the engine analyses the session in the background, one session at a time.
 - `GET /sessions/{id}/results` returns `{"session_id", "state", "failure", "points"}`. Each
