@@ -1,0 +1,12 @@
+services:
+  hifisync-acoustics:
+    image: ghcr.io/zerostorypoints/hifisync-acoustics:latest
+    # Host networking lets the engine advertise itself over mDNS (zeroconf).
+    network_mode: host
+    volumes:
+      - ./data:/data
+    restart: unless-stopped
+    # First start: create an API token once the container is running.
+    #   docker compose exec hifisync-acoustics hifisync-acoustics token create my-app
+    #   docker compose exec hifisync-acoustics hifisync-acoustics token create homeassistant --role ha
+    # The token is printed once and cannot be shown again.
