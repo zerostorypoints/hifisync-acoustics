@@ -25,6 +25,8 @@ node registered (see `docs/api.md`):
 export HIFISYNC_ACOUSTICS_TOKEN=...   # an app token, or use --token-file
 hifisync-acoustics measure --url http://localhost:8765 --room living \
     --assign POINT_ID=node-a --play "afplay {file}"
+# or play it on a UPnP/DLNA amplifier or streamer on the LAN:
+#   ... --url http://192.0.2.10:8765 --upnp H400
 ```
 
 It arms the node, plays the sweep and prints a summary per point. `docs/api.md` describes

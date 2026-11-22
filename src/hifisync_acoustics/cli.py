@@ -153,6 +153,9 @@ def _parser() -> argparse.ArgumentParser:
     m.add_argument("--start-window", type=float, default=10.0,
                    help="seconds to start playback once the nodes record (0-30)")
     m.add_argument("--play", help='player command, "{file}" is the sweep, e.g. "afplay {file}"')
+    m.add_argument("--upnp", metavar="RENDERER",
+                   help="play the sweep on a UPnP/DLNA renderer: a name it announces "
+                        "(e.g. H400) or its description URL; --url must be the engine's LAN address")
     m.add_argument("--token-file", help="file holding the token")
     m.add_argument("--yes", action="store_true", help="do not wait for Enter")
     m.set_defaults(func=_cmd_measure)

@@ -238,3 +238,40 @@ def test_authorization_not_forwarded_on_redirect():
         server.server_close()
     assert r.status == 200 and r.body == b"ok"
     assert seen == {"/start": "Bearer secret-value", "/elsewhere": None}
+
+
+@pytest.fixture
+def renderer():
+    from fake_renderer import FakeRenderer
+    r = FakeRenderer()
+    yield r
+    r.close()
+
+
+def test_upnp_plays_the_sweep_url(setup, node, renderer, capsys):
+    assert main(_args(setup, "--upnp", renderer.url)) == 0
+    out = capsys.readouterr().out
+    assert "Playing the sweep on the renderer: http://engine/api/v1/sweep.wav?duration=2" in out
+    actions = [a for _, a, _ in renderer.actions]
+    assert actions[0].endswith('#SetAVTransportURI"') and actions[1].endswith('#Play"')
+    assert "http://engine/api/v1/sweep.wav?duration=2" in renderer.actions[0][2]
+
+
+def test_upnp_with_loopback_url_creates_no_session(setup, renderer, monkeypatch, capsys):
+    calls = []
+    monkeypatch.setattr(measure_client, "http_request",
+                        lambda *a: calls.append(a) or pytest.fail("no request expected"))
+    args = _args(setup, "--upnp", renderer.url)
+    args[args.index("http://engine")] = "http://127.0.0.1:8765"
+    assert main(args) == 2
+    assert "LAN address" in capsys.readouterr().err and not calls
+
+
+def test_upnp_and_play_are_exclusive(setup, renderer, capsys):
+    assert main(_args(setup, "--upnp", renderer.url, "--play", "echo {file}")) == 2
+    assert "either --play or --upnp" in capsys.readouterr().err
+
+
+def test_bad_renderer_exits_2_before_arming(setup, capsys):
+    assert main(_args(setup, "--upnp", "http://127.0.0.1:9/none.xml")) == 2
+    assert "bad --upnp renderer" in capsys.readouterr().err

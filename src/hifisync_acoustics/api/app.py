@@ -1,6 +1,6 @@
 """The engine's HTTP API under ``/api/v1``; see docs/api.md.
 
-Every route except ``/health`` needs ``Authorization: Bearer <token>``. Errors are
+Every route except ``/health`` and ``/sweep.wav`` needs ``Authorization: Bearer <token>``. Errors are
 ``{"error": {"code", "message"}}``. Tokens never appear in logs or error bodies, and
 error messages carry no file system paths.
 """
@@ -70,6 +70,9 @@ log = logging.getLogger(__name__)
 access_log = logging.getLogger("hifisync_acoustics.api.access")
 
 API = "/api/v1"
+# No token: health, and the sweep, which a media renderer fetches itself and cannot send
+# a header for. The sweep is the same public signal for everyone.
+_PUBLIC_PATHS = frozenset({f"{API}/health", f"{API}/sweep.wav"})
 MAX_UPLOAD_BYTES = 200 * 1024 * 1024
 MIN_SWEEP_S, MAX_SWEEP_S, MAX_REPEATS = 0.5, 60.0, 10
 MIN_POLL_WAIT_S, MAX_POLL_WAIT_S, DEFAULT_POLL_WAIT_S = 1, 30, 25
@@ -205,7 +208,7 @@ class _Auth:
                 400, "token_in_url",
                 "tokens are never accepted in the URL; send Authorization: Bearer <token>")
             return await response(scope, receive, send)
-        if scope["path"] != f"{API}/health":
+        if scope["path"] not in _PUBLIC_PATHS:
             header = ""
             for k, v in scope.get("headers", []):
                 if k == b"authorization":
@@ -739,7 +742,7 @@ def create_app(store: Store, *, analyse_inline: bool = False,
 
     routes = [
         Route(f"{API}/health", health),
-        Route(f"{API}/sweep.wav", staff(sweep_wav)),
+        Route(f"{API}/sweep.wav", sweep_wav),
         Route(f"{API}/rooms", staff(list_rooms)),
         Route(f"{API}/rooms/{{room_id}}", staff(get_room), methods=["GET"]),
         Route(f"{API}/rooms/{{room_id}}", staff(put_room), methods=["PUT"]),

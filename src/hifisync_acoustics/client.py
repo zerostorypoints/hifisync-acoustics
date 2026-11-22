@@ -7,10 +7,12 @@ one seam tests replace.
 
 from __future__ import annotations
 
+import ipaddress
 import json
 import os
 import shlex
 import shutil
+import socket
 import subprocess
 import sys
 import tempfile
@@ -23,6 +25,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
+from hifisync_acoustics import upnp
 from hifisync_acoustics.analysis.sweep import SweepSpec
 from hifisync_acoustics.commands import API_PREFIX, CAPTURE_TAIL_S, capture_s
 
@@ -202,10 +205,32 @@ def _parse_play(play: str | None) -> list[str] | None:
     return cmd
 
 
+def _parse_upnp(args) -> tuple[str, str] | None:
+    """Find the renderer and its AVTransport before anything is armed."""
+    name = getattr(args, "upnp", None)
+    if not name:
+        return None
+    if args.play:
+        raise ClientError("use either --play or --upnp, not both")
+    host = urllib.parse.urlsplit(args.url).hostname or ""
+    try:
+        loopback = ipaddress.ip_address(socket.gethostbyname(host)).is_loopback
+    except (OSError, ValueError):
+        loopback = False
+    if loopback or host == "localhost":
+        raise ClientError("with --upnp, --url must be the engine's LAN address: "
+                          "the renderer fetches the sweep from it")
+    try:
+        return upnp.avtransport_control(upnp.discover(name))
+    except upnp.UpnpError as exc:
+        raise ClientError(f"bad --upnp renderer: {exc}") from exc
+
+
 def run_measure(args, out: Callable[[str], None] = print,
                 ask: Callable[[str], str] = input) -> int:
     engine = Engine(args.url, read_token(args.token_file))
     play = _parse_play(args.play)
+    renderer = _parse_upnp(args)
     if not args.yes:
         try:
             ask("Set the volume on your player now; nothing here changes it. "
@@ -237,7 +262,16 @@ def run_measure(args, out: Callable[[str], None] = print,
             out("error: start window passed before all nodes were ready; "
                 "re-run with a larger --start-window")
             return EXIT_FAILED
-        if play:
+        if renderer:
+            sweep_url = f"{args.url.rstrip('/')}{API_PREFIX}/sweep.wav?{query}"
+            try:
+                upnp.play(*renderer, sweep_url)
+            except upnp.UpnpError as exc:
+                out(f"warning: the renderer did not start the sweep: {exc}; "
+                    f"play it yourself: {path}")
+            else:
+                out(f"Playing the sweep on the renderer: {sweep_url}")
+        elif play:
             cmd = [part.replace("{file}", path) for part in play]
             try:
                 done = subprocess.run(cmd, check=False)

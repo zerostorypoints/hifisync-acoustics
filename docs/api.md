@@ -17,7 +17,9 @@ advertise when it listens on a loopback address or when started with `--no-zeroc
 
 ## Tokens
 
-Every route except `/health` needs `Authorization: Bearer <token>`.
+Every route except `/health` and `/sweep.wav` needs `Authorization: Bearer <token>`. The sweep
+is public because a media renderer fetches it by URL and cannot send a header; it is the same
+signal for everyone and carries no data.
 
 ```
 hifisync-acoustics token create NAME [--role app|ha|node] [--node NODE_ID]   # prints the token once
@@ -294,7 +296,7 @@ it is not stored. Once no point is pending, the session is analysed as usual, or
 ```
 hifisync-acoustics measure --url http://host:8765 --room living \
     --assign POINT_ID=node-a [--assign POINT_ID=node-b ...] \
-    [--duration 6] [--repeats 1] [--start-window 10] [--play "afplay {file}"] [--yes]
+    [--duration 6] [--repeats 1] [--start-window 10] [--play "afplay {file}" | --upnp RENDERER] [--yes]
 ```
 
 The token (role `app` or `ha`) comes from the environment variable
@@ -313,8 +315,13 @@ already exist.
    `recording` ack, so the CLI counts the window from the first `recording` it saw. If it has
    already passed, it exits 1 with "start window passed before all nodes were ready; re-run
    with a larger --start-window". With `--play`, runs the command with `{file}` replaced, as
-   an argument list without a shell. Without it, prints the file path and the seconds left in
-   the start window.
+   an argument list without a shell. With `--upnp`, sends `SetAVTransportURI` with the
+   engine's `sweep.wav` URL and then `Play` to the renderer's AVTransport service; the
+   renderer fetches the file itself. `RENDERER` is a name the renderer announces over SSDP
+   (its friendlyName or modelName, for example `H400`) or its device description URL. It is
+   looked up before the session is created, a bad one exits 2, and `--url` must then be the
+   engine's LAN address, not loopback. The renderer's volume is never changed. Without either,
+   prints the file path and the seconds left in the start window.
 5. Polls until the session is `done` or `failed`, then prints one line per point: state,
    failure, T30 at 500 Hz and 1 kHz and the strongest peak below 200 Hz. The temporary file
    is removed.
