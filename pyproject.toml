@@ -1,0 +1,30 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "hifisync-acoustics"
+version = "0.1.0"
+description = "Room acoustics measurement engine"
+readme = "README.md"
+requires-python = ">=3.13"
+license = { text = "Apache-2.0" }
+dependencies = [
+    "numpy>=2.3",
+    "scipy>=1.16",
+]
+
+[project.scripts]
+hifisync-acoustics = "hifisync_acoustics.cli:main"
+
+[dependency-groups]
+dev = [
+    "pytest",
+    "httpx",
+]
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/hifisync_acoustics"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
