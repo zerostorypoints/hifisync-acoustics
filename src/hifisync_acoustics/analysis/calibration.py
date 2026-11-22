@@ -11,7 +11,7 @@ import numpy as np
 from hifisync_acoustics.analysis.response import FrequencyResponse
 from hifisync_acoustics.wav import RecordingError
 
-_SENS = re.compile(r"Sens\s*Factor\s*=\s*([-+]?\d+(?:\.\d+)?)\s*dB", re.IGNORECASE)
+_SENS = re.compile(r"Sens\s*Factor\s*=\s*([-+]?(?:\d+\.?\d*|\.\d+))\s*dB", re.IGNORECASE)
 
 
 @dataclass(frozen=True)
@@ -31,7 +31,9 @@ def _interp_log(f: np.ndarray, fp: np.ndarray, vp: np.ndarray) -> np.ndarray:
 def read_minidsp_cal(path: Path) -> CalibrationCurve:
     """Parse a miniDSP UMIK-1 ``.txt``: optional quoted header holding
     ``Sens Factor =<x>dB``, then ``frequency  dB`` rows (whitespace or comma
-    separated). Rows are taken as correction values as they stand."""
+    separated). The file's dB column is the microphone's own response
+    (deviation), which a measurement subtracts; ``correction_db`` is therefore
+    the negated column."""
     sens: float | None = None
     rows: list[tuple[float, float]] = []
     for line in Path(path).read_text(encoding="utf-8-sig", errors="replace").splitlines():
@@ -42,6 +44,8 @@ def read_minidsp_cal(path: Path) -> CalibrationCurve:
             m = _SENS.search(line)
             if m:
                 sens = float(m.group(1))
+            elif re.search(r"Sens\s*Factor", line, re.IGNORECASE):
+                raise RecordingError("bad_calibration", f"cannot parse Sens Factor in header: {line!r}")
             continue
         parts = re.split(r"[\s,;]+", line)
         try:
@@ -51,7 +55,7 @@ def read_minidsp_cal(path: Path) -> CalibrationCurve:
     if not rows:
         raise RecordingError("bad_calibration", f"{path} holds no frequency/dB rows")
     arr = np.array(sorted(rows))
-    return CalibrationCurve(freqs_hz=arr[:, 0], correction_db=arr[:, 1], sensitivity_db=sens)
+    return CalibrationCurve(freqs_hz=arr[:, 0], correction_db=-arr[:, 1], sensitivity_db=sens)
 
 
 def node_correction(

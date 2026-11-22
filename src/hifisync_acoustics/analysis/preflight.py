@@ -5,7 +5,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 
 import numpy as np
-from scipy.signal import fftconvolve
+from scipy.signal import butter, fftconvolve, sosfiltfilt
 
 from hifisync_acoustics.analysis.sweep import Sweep
 from hifisync_acoustics.wav import Recording
@@ -32,7 +32,7 @@ def preflight(
     sweep. The sweep position is found by matched filtering (as in
     ``impulse_response``); the noise power is the median 20 ms frame power
     before it, the signal power the mean power over the middle 80 % of the
-    sweep. Result codes, in order of precedence:
+    sweep, both band-passed to f_start..f_end (Butterworth order 4, zero phase). Result codes, in order of precedence:
 
     - ``clipped``: any sample with |x| >= 10**(clip_dbfs / 20).
     - ``no_signal``: no sweep is found, the lead-in before it is shorter than
@@ -62,10 +62,15 @@ def preflight(
     if start < int(MIN_LEAD_S * fs):
         return PreflightResult(False, "no_signal", peak_dbfs, nan)
 
+    # Both powers are taken in the sweep band, so rumble or hiss outside it
+    # does not fail a usable recording.
+    spec = sweep.spec
+    sos = butter(4, [spec.f_start, min(spec.f_end, 0.99 * fs / 2)], btype="bandpass", fs=fs, output="sos")
     frame = int(FRAME_S * fs)
-    lead = x[: start // frame * frame].reshape(-1, frame)
+    lead = sosfiltfilt(sos, x[: start // frame * frame]).reshape(-1, frame)
     noise = float(np.median(np.mean(lead**2, axis=1)))
-    seg = x[start + n // 10 : start + n - n // 10]
+    seg = sosfiltfilt(sos, x[start : start + n])
+    seg = seg[n // 10 : len(seg) - n // 10]
     signal = float(np.mean(seg**2)) if len(seg) else 0.0
     tiny = np.finfo(float).tiny
     snr_db = 10 * np.log10(max(signal - noise, tiny) / max(noise, tiny))

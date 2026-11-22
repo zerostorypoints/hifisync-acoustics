@@ -59,3 +59,17 @@ def test_low_snr_is_no_signal():
 def test_short_lead_in_is_no_signal():
     r = preflight(_rec(_recording(lead_s=0.1)), SWEEP)
     assert not r.ok and r.code == "no_signal"
+
+
+def test_low_frequency_rumble_does_not_fail():
+    x = _recording()
+    t = np.arange(len(x)) / FS
+    x = x + 0.05 * np.sin(2 * np.pi * 10 * t)
+    r = preflight(_rec(x), SWEEP)
+    assert r.ok and r.code is None
+
+
+def test_noise_shorter_than_inverse_filter_is_no_signal():
+    x = 1e-4 * np.random.default_rng(2).standard_normal(len(SWEEP.inverse) - 1000)
+    r = preflight(_rec(x), SWEEP)
+    assert not r.ok and r.code == "no_signal"
