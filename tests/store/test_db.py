@@ -34,10 +34,10 @@ def test_open_creates_layout(tmp_path):
             "session_points", "tokens"} <= tables
 
 
-def test_migration_from_empty_sets_user_version_1(tmp_path):
+def test_migration_from_empty_sets_user_version_2(tmp_path):
     Store.open(tmp_path)
     con = sqlite3.connect(tmp_path / "engine.sqlite3")
-    assert con.execute("PRAGMA user_version").fetchone()[0] == 1
+    assert con.execute("PRAGMA user_version").fetchone()[0] == 2
 
 
 def test_calibration_versions_increment_per_node(tmp_path):

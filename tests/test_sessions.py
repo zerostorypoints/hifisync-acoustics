@@ -222,3 +222,93 @@ def test_get_node(env):
     store = env[0]
     assert store.get_node("n1")["esphome_name"] == "mic-n1"
     assert store.get_node("missing") is None
+
+
+def test_rejected_upload_leaves_stored_file_unchanged(env, tmp_path):
+    store = env[0]
+    sid = _session(env)
+    add_recording(store, sid, "n1", _wav(tmp_path, "good"))
+    add_recording(store, sid, "n2", _wav(tmp_path, "good2", seed=1))
+    analyse_session(store, sid)
+    stored = store.data_dir / f"recordings/{sid}/n1.wav"
+    before = stored.read_bytes()
+    with pytest.raises(ValueError):
+        add_recording(store, sid, "n1", _wav(tmp_path, "other", seed=5))
+    assert stored.read_bytes() == before
+    assert [p.name for p in stored.parent.iterdir() if p.name.endswith(".tmp")] == []
+
+
+def test_rate_mismatch_fails_at_upload_naming_both_rates(env, tmp_path):
+    store = env[0]
+    sid = _session(env)
+    out = add_recording(store, sid, "n1", _wav(tmp_path, "slow", rate=44100))
+    assert (out.point_state, out.failure, out.session_state) == ("failed", "rate_mismatch",
+                                                                 "recording")
+    assert "44100" in out.detail and "48000" in out.detail
+    p = _points(store, sid)["n1"]
+    assert p["failure"] == "rate_mismatch"
+    assert "44100" in p["failure_detail"] and "48000" in p["failure_detail"]
+
+
+def test_too_short_fails_at_upload(env, tmp_path):
+    store = env[0]
+    sid = _session(env)
+    short = tmp_path / "short.wav"
+    wavfile.write(short, 48000, np.zeros(48000 * 2, dtype=np.float32))
+    out = add_recording(store, sid, "n1", short)
+    assert out.failure == "too_short" and out.point_state == "failed"
+    assert _points(store, sid)["n1"]["failure_detail"]
+
+
+def test_good_upload_outcome(env, tmp_path):
+    store = env[0]
+    sid = _session(env)
+    out = add_recording(store, sid, "n1", _wav(tmp_path, "good"))
+    assert (out.point_state, out.failure, out.detail, out.session_state) == (
+        "uploaded", None, None, "recording")
+    out = add_recording(store, sid, "n2", _wav(tmp_path, "good2", seed=1))
+    assert out.session_state == "analysing"
+
+
+def test_all_failed_at_upload_finishes_session(env, tmp_path):
+    store = env[0]
+    sid = _session(env)
+    add_recording(store, sid, "n1", _wav(tmp_path, "s1", rate=44100))
+    out = add_recording(store, sid, "n2", _wav(tmp_path, "s2", rate=44100))
+    assert out.session_state == "failed"
+    s = store.get_session(sid)
+    assert s["state"] == "failed" and s["failure"] == "all_points_failed"
+    assert recover_interrupted(store) == 0
+
+
+def test_concurrent_analyse_claims_once(env, tmp_path):
+    store = env[0]
+    sid = _session(env)
+    add_recording(store, sid, "n1", _wav(tmp_path, "a"))
+    add_recording(store, sid, "n2", _wav(tmp_path, "b", seed=1))
+    results = []
+    barrier = threading.Barrier(2)
+
+    def run():
+        barrier.wait()
+        try:
+            analyse_session(store, sid)
+            results.append("ok")
+        except ValueError:
+            results.append("rejected")
+
+    ts = [threading.Thread(target=run) for _ in range(2)]
+    [t.start() for t in ts]
+    [t.join() for t in ts]
+    assert sorted(results) == ["ok", "rejected"]
+    assert store.get_session(sid)["state"] == "done"
+
+
+def test_late_finish_does_not_overwrite_interrupted(env):
+    store = env[0]
+    sid = _session(env)
+    store.set_session_state(sid, "analysing")
+    recover_interrupted(store)
+    assert store.finish_session(sid) == "failed"
+    s = store.get_session(sid)
+    assert s["state"] == "failed" and s["failure"] == "interrupted"

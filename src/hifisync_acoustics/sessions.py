@@ -9,8 +9,11 @@ from __future__ import annotations
 import dataclasses
 import json
 import logging
+import os
 import shutil
+import tempfile
 import zipfile
+from dataclasses import dataclass
 from pathlib import Path
 
 from hifisync_acoustics.analysis.modes import RoomDimensions
@@ -20,6 +23,16 @@ from hifisync_acoustics.store.db import Store
 from hifisync_acoustics.wav import RecordingError, read_wav
 
 log = logging.getLogger(__name__)
+
+MIN_TAIL_S = 1.0  # a usable recording is at least the sweep plus this much
+
+
+@dataclass(frozen=True)
+class UploadOutcome:
+    point_state: str
+    failure: str | None
+    detail: str | None
+    session_state: str  # "analysing" means a worker should now run analyse_session
 
 
 def _safe_name(name: str) -> bool:
@@ -45,23 +58,49 @@ def create_session(store: Store, room_id: str, assignments: list[tuple[str, str]
     return store.create_session(room_id, assignments, dataclasses.asdict(sweep), player_chain)
 
 
-def add_recording(store: Store, session_id: str, node_id: str, wav_path: Path) -> None:
-    """Validate and store the node's recording. An unusable WAV fails only that point."""
+def add_recording(store: Store, session_id: str, node_id: str, wav_path: Path) -> UploadOutcome:
+    """Validate and store the node's recording. An unusable WAV fails only that point.
+
+    The stored file is replaced only when the upload is accepted by the session."""
     session = store.get_session(session_id, include_results=False)
     if session is None:
         raise KeyError(session_id)
     if node_id not in {p["node_id"] for p in session["points"]}:
         raise KeyError(node_id)
+    spec = SweepSpec(**session["sweep"])
+    failure = detail = None
     try:
-        read_wav(Path(wav_path))
+        rec = read_wav(Path(wav_path))
     except RecordingError as exc:
-        store.record_point_upload(session_id, node_id, recording_path=None, failure=exc.code)
-        return
+        failure, detail = exc.code, str(exc)
+    else:
+        if rec.sample_rate != spec.sample_rate:
+            failure = "rate_mismatch"
+            detail = f"recording is {rec.sample_rate} Hz but the sweep was generated at " \
+                     f"{spec.sample_rate} Hz"
+        elif len(rec.samples) < (spec.duration_s + MIN_TAIL_S) * rec.sample_rate:
+            failure = "too_short"
+            detail = f"recording is {len(rec.samples) / rec.sample_rate:.2f} s, need at least " \
+                     f"{spec.duration_s + MIN_TAIL_S:.2f} s"
+    if failure:
+        state = store.record_point_upload(session_id, node_id, recording_path=None,
+                                          failure=failure, detail=detail)
+        return UploadOutcome("failed", failure, detail, state)
+
     rel = Path("recordings") / session_id / f"{node_id}.wav"
     dest = store.data_dir / rel
     dest.parent.mkdir(parents=True, exist_ok=True)
-    shutil.copyfile(wav_path, dest)
-    store.record_point_upload(session_id, node_id, recording_path=rel.as_posix(), failure=None)
+    fd, tmp = tempfile.mkstemp(dir=dest.parent, prefix=".upload-", suffix=".tmp")
+    os.close(fd)
+    try:
+        shutil.copyfile(wav_path, tmp)
+        state = store.record_point_upload(session_id, node_id, recording_path=rel.as_posix(),
+                                          failure=None)
+        os.replace(tmp, dest)
+    except BaseException:
+        Path(tmp).unlink(missing_ok=True)
+        raise
+    return UploadOutcome("uploaded", None, None, state)
 
 
 def analyse_session(store: Store, session_id: str) -> None:
@@ -69,8 +108,8 @@ def analyse_session(store: Store, session_id: str) -> None:
     session = store.get_session(session_id, include_results=False)
     if session is None:
         raise KeyError(session_id)
-    if session["state"] != "analysing":
-        raise ValueError(f"session {session_id} is {session['state']}, not analysing")
+    if not store.claim_analysis(session_id):
+        raise ValueError(f"session {session_id} is {session['state']} or already being analysed")
     try:
         _analyse_points(store, session)
     except Exception as exc:
@@ -95,8 +134,9 @@ def _analyse_points(store: Store, session: dict) -> None:
         try:
             rec = read_wav(store.data_dir / point["recording_path"])
             if rec.sample_rate != spec.sample_rate:
-                raise RecordingError("rate_mismatch",
-                                     f"recording is {rec.sample_rate} Hz, sweep {spec.sample_rate} Hz")
+                raise RecordingError(
+                    "rate_mismatch", f"recording is {rec.sample_rate} Hz but the sweep was "
+                    f"generated at {spec.sample_rate} Hz")
             cal = store.latest_calibration(point["node_id"])
             result = analyse_recording(rec, sweep, dims, cal.curve if cal else None)
             if result.preflight.ok:
@@ -104,10 +144,11 @@ def _analyse_points(store: Store, session: dict) -> None:
                                        failure=None, result=result.to_json())
             else:
                 store.set_point_result(session_id, point["point_id"], state="failed",
-                                       failure=result.preflight.code, result=result.to_json())
+                                       failure=result.preflight.code, result=result.to_json(),
+                                       detail=f"preflight: {result.preflight.code}")
         except RecordingError as exc:
             store.set_point_result(session_id, point["point_id"], state="failed",
-                                   failure=exc.code, result=None)
+                                   failure=exc.code, result=None, detail=str(exc))
         except Exception as exc:
             log.error("point %s of session %s failed: %s", point["point_id"], session_id,
                       type(exc).__name__)
@@ -129,7 +170,8 @@ def export_session(store: Store, session_id: str) -> Path:
     out.parent.mkdir(parents=True, exist_ok=True)
     meta = {k: v for k, v in session.items() if k != "points"}
     meta["points"] = [{k: v for k, v in p.items() if k != "result"} for p in session["points"]]
-    with zipfile.ZipFile(out, "w", zipfile.ZIP_DEFLATED) as z:
+    tmp = out.with_name(f".{out.name}.tmp")
+    with zipfile.ZipFile(tmp, "w", zipfile.ZIP_DEFLATED) as z:
         z.writestr("session.json", json.dumps(meta, indent=2))
         for p in session["points"]:
             if p["recording_path"]:
@@ -138,4 +180,5 @@ def export_session(store: Store, session_id: str) -> Path:
                     z.write(src, f"recordings/{p['node_id']}.wav")
             if p["result"] is not None:
                 z.writestr(f"results/{p['point_id']}.json", json.dumps(p["result"]))
+    os.replace(tmp, out)
     return out

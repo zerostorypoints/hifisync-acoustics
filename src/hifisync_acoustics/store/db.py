@@ -22,7 +22,7 @@ import numpy as np
 
 from hifisync_acoustics.analysis.calibration import CalibrationCurve
 
-_MIGRATIONS = ["schema.sql"]  # index i migrates user_version i to i + 1
+_MIGRATIONS = ["schema.sql", "schema_v2.sql"]  # index i migrates user_version i to i + 1
 
 
 class ManagedByHA(ValueError):
@@ -279,11 +279,12 @@ class Store:
                 raise KeyError(session_id)
 
     def record_point_upload(self, session_id: str, node_id: str, *, recording_path: str | None,
-                            failure: str | None) -> str:
+                            failure: str | None, detail: str | None = None) -> str:
         """Mark the node's point ``uploaded`` (or ``failed`` with ``failure``) and, once no point
         is pending, move the session to ``analysing``; otherwise to ``recording``. Atomic.
         Returns the session state. Raises KeyError for an unknown session or node and
-        ValueError when the session no longer accepts recordings."""
+        ValueError when the session no longer accepts recordings. When no point is pending and
+        none is ``uploaded`` (all failed) the session is finished as failed/all_points_failed."""
         with self._write() as con:
             s = con.execute("SELECT state FROM sessions WHERE id = ?", (session_id,)).fetchone()
             if s is None:
@@ -291,27 +292,46 @@ class Store:
             if s["state"] not in ("created", "recording"):
                 raise ValueError(f"session {session_id} is {s['state']}, not accepting recordings")
             cur = con.execute(
-                "UPDATE session_points SET state = ?, failure = ?, recording_path = ?"
-                " WHERE session_id = ? AND node_id = ?",
-                ("failed" if failure else "uploaded", failure, recording_path, session_id,
-                 node_id))
+                "UPDATE session_points SET state = ?, failure = ?, failure_detail = ?,"
+                " recording_path = ? WHERE session_id = ? AND node_id = ?",
+                ("failed" if failure else "uploaded", failure, detail if failure else None,
+                 recording_path, session_id, node_id))
             if cur.rowcount == 0:
                 raise KeyError(node_id)
             pending = con.execute(
                 "SELECT COUNT(*) FROM session_points WHERE session_id = ? AND state = 'pending'",
                 (session_id,)).fetchone()[0]
-            state = "recording" if pending else "analysing"
-            con.execute("UPDATE sessions SET state = ?, updated_at = ? WHERE id = ?",
-                        (state, _now(), session_id))
+            uploaded = con.execute(
+                "SELECT COUNT(*) FROM session_points WHERE session_id = ? AND state = 'uploaded'",
+                (session_id,)).fetchone()[0]
+            failure_code = None
+            if pending:
+                state = "recording"
+            elif uploaded:
+                state = "analysing"
+            else:
+                state, failure_code = "failed", "all_points_failed"
+            con.execute("UPDATE sessions SET state = ?, failure = ?, updated_at = ?"
+                        " WHERE id = ?", (state, failure_code, _now(), session_id))
         return state
 
+    def claim_analysis(self, session_id: str) -> bool:
+        """Atomically claim an ``analysing`` session for one worker; False if not claimable."""
+        with self._write() as con:
+            cur = con.execute(
+                "UPDATE sessions SET analysis_claimed = 1, updated_at = ?"
+                " WHERE id = ? AND state = 'analysing' AND analysis_claimed = 0",
+                (_now(), session_id))
+            return cur.rowcount == 1
+
     def set_point_result(self, session_id: str, point_id: str, *, state: str,
-                         failure: str | None, result: dict[str, Any] | None) -> None:
+                         failure: str | None, result: dict[str, Any] | None,
+                         detail: str | None = None) -> None:
         with self._write() as con:
             con.execute(
-                "UPDATE session_points SET state = ?, failure = ?, result_json = ?"
-                " WHERE session_id = ? AND point_id = ?",
-                (state, failure, None if result is None else json.dumps(result), session_id,
+                "UPDATE session_points SET state = ?, failure = ?, failure_detail = ?,"
+                " result_json = ? WHERE session_id = ? AND point_id = ?",
+                (state, failure, detail if failure else None, None if result is None else json.dumps(result), session_id,
                  point_id))
 
     def finish_session(self, session_id: str) -> str:
@@ -322,8 +342,10 @@ class Store:
                 (session_id,)).fetchone()[0]
             state, failure = ("done", None) if done else ("failed", "all_points_failed")
             con.execute("UPDATE sessions SET state = ?, failure = ?, updated_at = ?"
-                        " WHERE id = ?", (state, failure, _now(), session_id))
-        return state
+                        " WHERE id = ? AND state = 'analysing'",
+                        (state, failure, _now(), session_id))
+            return con.execute("SELECT state FROM sessions WHERE id = ?",
+                               (session_id,)).fetchone()[0]
 
     def fail_analysing_sessions(self, failure: str) -> int:
         with self._write() as con:
