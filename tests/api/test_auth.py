@@ -2,6 +2,8 @@ import base64
 import hashlib
 import logging
 import sqlite3
+import time
+from urllib.parse import quote
 
 import pytest
 
@@ -145,3 +147,38 @@ def test_cli_data_dir_from_environment(tmp_path, capsys, monkeypatch):
     monkeypatch.setenv("HIFISYNC_ACOUSTICS_DATA", str(tmp_path / "env"))
     assert cli.main(["token", "create", "phone"]) == 0
     assert (tmp_path / "env" / "engine.sqlite3").is_file()
+
+
+async def test_long_query_is_checked_without_db(client, app_token, monkeypatch):
+    def no_db(*args, **kwargs):
+        raise AssertionError("auth.verify must not run for the query check")
+
+    monkeypatch.setattr(auth, "verify", no_db)
+    qs = "&".join(f"p{i}={'v' * 20}" for i in range(700))
+    start = time.perf_counter()
+    r = await client.get(f"/api/v1/health?{qs}")
+    elapsed = time.perf_counter() - start
+    assert r.status_code == 200
+    assert elapsed < 0.2, elapsed
+
+
+async def test_semicolon_separated_token_rejected(client, app_token):
+    r = await client.get(f"/api/v1/rooms?a=1;x={app_token}", headers=bearer(app_token))
+    assert r.status_code == 400 and r.json()["error"]["code"] == "token_in_url"
+    assert app_token not in r.text
+
+
+async def test_percent_encoded_nested_token_rejected(client, app_token):
+    nested = quote(f"next=/x?t={app_token}", safe="")
+    r = await client.get(f"/api/v1/rooms?redirect={nested}", headers=bearer(app_token))
+    assert r.status_code == 400 and r.json()["error"]["code"] == "token_in_url"
+    assert app_token not in r.text
+
+
+async def test_token_shaped_path_segment_not_logged(client, app_token, caplog):
+    caplog.set_level(logging.DEBUG)
+    r = await client.get(f"/api/v1/nodes/{app_token}", headers=bearer(app_token))
+    assert r.status_code in (404, 405)
+    text = _engine_log_text(caplog)
+    assert "/api/v1/nodes/<redacted>" in text
+    assert app_token not in text

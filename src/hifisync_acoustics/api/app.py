@@ -21,7 +21,7 @@ from concurrent.futures import ThreadPoolExecutor
 from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import Any
-from urllib.parse import parse_qsl
+from urllib.parse import parse_qsl, unquote
 
 import numpy as np
 from scipy.io import wavfile
@@ -64,6 +64,8 @@ MIN_SWEEP_S, MAX_SWEEP_S, MAX_REPEATS = 0.5, 60.0, 10
 _TOKEN_PARAMS = {"token", "access_token", "bearer", "authorization", "auth", "api_key",
                  "apikey", "key"}
 _TOKEN_SCOPE_KEY = "hifisync.token"
+# The shape of ``secrets.token_urlsafe(32)``: 43 characters of the URL-safe alphabet.
+_TOKEN_SHAPE = re.compile(r"(?<![\w-])[A-Za-z0-9_-]{43}(?![\w-])")
 _ABS_PATH = re.compile(r"(?:[A-Za-z]:)?(?:[/\\][^\s/\\'\"]+){2,}")
 _NODE_FIELDS = {"esphome_name": str, "firmware": str, "capture": str, "install_room_id": str,
                 "install_x": float, "install_y": float, "install_z": float}
@@ -94,7 +96,8 @@ def public_message(message: str, labels: dict[str, str] | None = None) -> str:
 
 
 class _AccessLog:
-    """Logs method, path (never the query string), status and duration."""
+    """Logs method, path (never the query string), status and duration. Token-shaped
+    path segments are logged as ``<redacted>``."""
 
     def __init__(self, app: ASGIApp) -> None:
         self.app = app
@@ -114,7 +117,8 @@ class _AccessLog:
         try:
             await self.app(scope, receive, send_status)
         finally:
-            access_log.info("%s %s %d %.1f ms", scope["method"], scope["path"], status,
+            path = _TOKEN_SHAPE.sub("<redacted>", scope["path"])
+            access_log.info("%s %s %d %.1f ms", scope["method"], path, status,
                             (time.perf_counter() - start) * 1000)
 
 
@@ -161,14 +165,14 @@ class _Auth:
     def __init__(self, app: ASGIApp, store: Store) -> None:
         self.app, self.store = app, store
 
-    def _token_in_query(self, query: str) -> bool:
-        for key, value in parse_qsl(query, keep_blank_values=True):
+    @staticmethod
+    def _token_in_query(query: str) -> bool:
+        """A token-named parameter or any token-shaped value, raw or percent-decoded.
+        Checked by shape only, so it costs no database access before authentication."""
+        for key, _ in parse_qsl(query, keep_blank_values=True):
             if key.lower() in _TOKEN_PARAMS:
                 return True
-            for candidate in (key, value):
-                if len(candidate) >= 20 and auth.verify(self.store, candidate):
-                    return True
-        return False
+        return any(_TOKEN_SHAPE.search(q) for q in (query, unquote(query)))
 
     async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
         if scope["type"] != "http":
