@@ -13,11 +13,11 @@ def _rec(samples, rate=FS):
     return Recording(samples=samples, sample_rate=rate, channel_used=0, channels=1, subtype="FLOAT")
 
 
-def _room_ir(rng):
-    ir = np.zeros(FS)  # 1 s
-    ir[480] = 0.5
+def _room_ir(rng, seconds=1.5, at=480):
+    ir = np.zeros(int(seconds * FS))
+    ir[at] = 0.5
     t = np.arange(len(ir)) / FS
-    ir += 5e-5 * rng.standard_normal(len(ir)) * np.exp(-6.9078 * t / 0.4) * (np.arange(len(ir)) > 480)
+    ir += 5e-5 * rng.standard_normal(len(ir)) * np.exp(-6.9078 * t / 0.4) * (np.arange(len(ir)) > at)
     return ir
 
 
@@ -69,3 +69,33 @@ def test_repeats_averaged_and_selectable():
     assert abs(_gain_1k_db(one.samples) - (-6.02)) < 0.1
     with pytest.raises(ValueError):
         impulse_response(rec, s, repeat=3)
+
+
+def test_short_tail_has_no_zero_padding():
+    rng = np.random.default_rng(2)
+    s = generate_sweep(SweepSpec())
+    full = _recording(s, _room_ir(rng, at=100), rng, lead_s=0.5, delay=0)
+    rec = full[: int(7.6 * FS)]  # about 1.1 s after the peak
+    r = impulse_response(_rec(rec), s)
+    assert np.any(r.samples[-100:] != 0.0)
+    assert len(r.samples) - r.peak_index <= len(rec) - int(6.5 * FS) + 100
+    assert len(r.samples) < r.peak_index + 2 * FS
+
+
+def test_tail_under_one_second_is_too_short():
+    rng = np.random.default_rng(3)
+    s = generate_sweep(SweepSpec())
+    full = _recording(s, _room_ir(rng), rng, lead_s=0.6, delay=int(0.02 * FS))
+    rec = full[: int((0.6 + 0.02 + 6.0 + 0.5) * FS)]
+    assert len(rec) >= (6.0 + 1.0) * FS  # passes the plain length rule
+    with pytest.raises(RecordingError) as e:
+        impulse_response(_rec(rec), s)
+    assert e.value.code == "too_short"
+
+
+def test_single_repeat_tail_independent_of_gap():
+    rng = np.random.default_rng(4)
+    s = generate_sweep(SweepSpec(gap_s=0.0))
+    rec = _recording(s, _room_ir(rng, seconds=2.0), rng)
+    r = impulse_response(_rec(rec), s)
+    assert len(r.samples) - r.peak_index >= FS

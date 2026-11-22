@@ -11,6 +11,8 @@ from hifisync_acoustics.analysis.sweep import Sweep
 from hifisync_acoustics.wav import Recording, RecordingError
 
 PRE_PEAK_S = 0.005
+MIN_TAIL_S = 1.0
+MAX_SINGLE_TAIL_S = 3.0
 REFINE_S = 0.0005  # per-repeat peak search half-width (clock drift, jitter)
 
 
@@ -59,15 +61,27 @@ def impulse_response(rec: Recording, sweep: Sweep, repeat: int | None = None) ->
         raise RecordingError("too_short", "recording does not contain all sweep repeats")
 
     pre = int(PRE_PEAK_S * fs)
-    length = pre + int(round(spec.gap_s * fs))
     half = int(REFINE_S * fs)
-    ks = range(n_rep) if repeat is None else [repeat]
-    acc = np.zeros(length)
+    ks = list(range(n_rep) if repeat is None else [repeat])
+    peaks = []
     for k in ks:
         expected = best + k * period
         lo = max(expected - half, 0)
-        peak = lo + int(np.argmax(mag[lo : expected + half + 1]))
-        seg = y[peak - pre : peak - pre + length]
-        acc[: len(seg)] += seg
-    acc /= len(ks)
+        peaks.append(lo + int(np.argmax(mag[lo : expected + half + 1])))
+
+    # Tail: what the recording holds after each peak, capped by the next
+    # repeat (repeats > 1) or MAX_SINGLE_TAIL_S (one repeat). Never zero-padded.
+    cap = int(round(spec.gap_s * fs)) if n_rep > 1 else int(MAX_SINGLE_TAIL_S * fs)
+    tail = min(min(len(rec.samples) - p for p in peaks), cap)
+    if tail < int(MIN_TAIL_S * fs):
+        raise RecordingError(
+            "too_short",
+            f"recording holds only {max(tail, 0) / fs:.2f} s after the sweep peak; "
+            f"need at least {MIN_TAIL_S:.1f} s for the impulse response tail",
+        )
+    length = pre + tail
+    acc = np.zeros(length)
+    for p in peaks:
+        acc += y[p - pre : p - pre + length]
+    acc /= len(peaks)
     return ImpulseResponse(samples=acc, sample_rate=fs, peak_index=int(np.argmax(np.abs(acc))))
