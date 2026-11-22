@@ -88,11 +88,17 @@ A point of a session fails with one of these codes in its `failure` field:
 
 No token. `{"version": "0.1.0", "api": 1}`.
 
-### `GET /sweep.wav?duration=6&repeats=1`
+### `GET /sweep.wav?duration=6&repeats=1&sources=both`
 
 The measurement sweep as 16-bit PCM WAV at 48 kHz: 1.0 s of digital silence, then the sweep
 from 20 Hz to 20 kHz, peak at most −12 dBFS, with 2 s of silence between repeats. `duration`
 is 0.5 to 60 s, `repeats` 1 to 10.
+
+`sources` is a comma-separated list of `both`, `left` and `right`: one to three distinct
+names, default `both`. With the default the file is mono. With any other value the file has
+two channels (left, right): after the 1.0 s of silence, each source in the given order plays
+`repeats` sweeps on its channel (both channels for `both`), with 2 s between consecutive
+sweeps, also across sources. An unknown or repeated name answers 400.
 
 ### Rooms and points
 
@@ -152,11 +158,13 @@ reaches `recording` with its first upload or when it is armed.
   ```json
   {"room_id": "living",
    "assignments": [{"point_id": "…", "node_id": "n1"}, {"point_id": "…", "node_id": "n2"}],
-   "sweep": {"duration_s": 6.0, "repeats": 1},
+   "sweep": {"duration_s": 6.0, "repeats": 1, "sources": ["both"]},
    "player_chain": "streamer -> amplifier -> speakers"}
   ```
 
-  `sweep` and `player_chain` are optional. Each point and each node appears once. The answer
+  `sweep` and `player_chain` are optional. `sweep.sources` takes the same names as the
+  `sources` query of `GET /sweep.wav` as a JSON list; a session stored without it is
+  `["both"]`. Each point and each node appears once. The answer
   is 201 with the session.
 - `GET /sessions/{id}` returns the session and its points without results, and:
   - `nodes`: one entry per point, `{"node_id", "command_state", "detail"}`. `command_state`
@@ -169,8 +177,8 @@ reaches `recording` with its first upload or when it is armed.
   a `created` session and moves it to `recording`. The body is optional:
   `{"start_window_s": 10}`, from 0 to 30 s, the time the user has to start playback after the
   nodes are ready. Each node records `capture_s = start_window_s + sweep_file_s + 3` seconds,
-  where `sweep_file_s = 1 + repeats × duration_s + (repeats − 1) × 2` is the length of
-  `sweep.wav`. The answer is 200 with the session, as `GET /sessions/{id}` returns it.
+  where `sweep_file_s = 1 + n × duration_s + (n − 1) × 2` and `n = repeats × len(sources)`
+  is the length of `sweep.wav`. The answer is 200 with the session, as `GET /sessions/{id}` returns it.
   - A capture over 60 s answers 400 `capture_too_long`, and no command is created.
   - A session that is not `created`, or is already armed, answers 409
     `session_not_accepting`, and no command is created.

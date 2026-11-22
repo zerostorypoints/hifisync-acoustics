@@ -340,3 +340,21 @@ def test_late_finish_does_not_overwrite_interrupted(env):
     assert store.finish_session(sid) == "failed"
     s = store.get_session(sid)
     assert s["state"] == "failed" and s["failure"] == "interrupted"
+
+
+def test_old_sweep_json_defaults_both(env, tmp_path):
+    import json
+
+    store = env[0]
+    sid = _session(env)
+    old = {"f_start": 20.0, "f_end": 20000.0, "duration_s": 2.0, "sample_rate": 48000,
+           "fade_in_s": 0.05, "fade_out_s": 0.01, "peak_dbfs": -12.0, "repeats": 1,
+           "gap_s": 2.0}
+    with store._connect() as con:
+        con.execute("UPDATE sessions SET sweep_json = ? WHERE id = ?", (json.dumps(old), sid))
+    add_recording(store, sid, "n1", _wav(tmp_path, "good"))
+    add_recording(store, sid, "n2", _wav(tmp_path, "good2", seed=1))
+    analyse_session(store, sid)
+    pts = _points(store, sid)
+    assert pts["n1"]["state"] == "done" and pts["n1"]["failure"] is None
+    assert pts["n1"]["result"]["preflight"]["ok"] is True

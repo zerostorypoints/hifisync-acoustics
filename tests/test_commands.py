@@ -207,3 +207,19 @@ def test_expiry_leaving_uploads_reports_analysing(store, tmp_path):
     assert commands.expire(store, now=_at(armed, 31), on_analysing=seen.append) == 1
     assert seen == [sid]
     assert store.get_session(sid)["state"] == "analysing"
+
+
+def test_sweep_file_s_counts_sources():
+    spec = SweepSpec(duration_s=2.0, repeats=1, sources=("left", "right"))
+    assert commands.sweep_file_s(spec) == 7.0
+
+
+def test_capture_too_long_with_sources(store):
+    # One source fits (1 + 20 + 3 s file + window), three sources do not.
+    ok = _session(store, SweepSpec(duration_s=20, repeats=1, sources=("both",)))
+    commands.arm(store, ok)
+    sid = _session(store, SweepSpec(duration_s=20, repeats=1,
+                                    sources=("left", "right", "both")))
+    with pytest.raises(ValueError, match="capture_too_long"):
+        commands.arm(store, sid)
+    assert store.list_commands(sid) == []

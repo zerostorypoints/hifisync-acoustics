@@ -47,9 +47,8 @@ from hifisync_acoustics.analysis.calibration import (
 from hifisync_acoustics.analysis.ir import impulse_response
 from hifisync_acoustics.analysis.preflight import preflight
 from hifisync_acoustics.analysis.response import frequency_response
-from hifisync_acoustics.analysis.sweep import SweepSpec, generate_sweep
+from hifisync_acoustics.analysis.sweep import SweepSpec, generate_sweep, render_sequence
 from hifisync_acoustics.api import auth
-from hifisync_acoustics.commands import SWEEP_LEAD_S
 from hifisync_acoustics.messages import public_message
 from hifisync_acoustics.sessions import (
     _safe_name,
@@ -251,7 +250,7 @@ def _text(value: Any, name: str) -> str:
     return value
 
 
-def _sweep_spec(duration: Any, repeats: Any) -> SweepSpec:
+def _sweep_spec(duration: Any, repeats: Any, sources: Any = None) -> SweepSpec:
     duration = _number(duration, "duration")
     if isinstance(repeats, bool) or not isinstance(repeats, int):
         raise ApiError(400, "bad_request", "repeats must be an integer")
@@ -260,7 +259,14 @@ def _sweep_spec(duration: Any, repeats: Any) -> SweepSpec:
                        f"duration must be between {MIN_SWEEP_S} and {MAX_SWEEP_S} s")
     if not 1 <= repeats <= MAX_REPEATS:
         raise ApiError(400, "bad_request", f"repeats must be between 1 and {MAX_REPEATS}")
-    return SweepSpec(duration_s=duration, repeats=repeats)
+    if sources is None:
+        return SweepSpec(duration_s=duration, repeats=repeats)
+    if not isinstance(sources, list) or not all(isinstance(x, str) for x in sources):
+        raise ApiError(400, "bad_request", "sources must be a list of names")
+    try:
+        return SweepSpec(duration_s=duration, repeats=repeats, sources=tuple(sources))
+    except ValueError as exc:
+        raise ApiError(400, "bad_request", str(exc)) from None
 
 
 def _parse_float(raw: str | None, name: str, default: float) -> float:
@@ -377,14 +383,15 @@ def create_app(store: Store, *, analyse_inline: bool = False,
 
     async def sweep_wav(request: Request) -> Response:
         q = request.query_params
+        raw_sources = q.get("sources")
         spec = _sweep_spec(_parse_float(q.get("duration"), "duration", 6.0),
-                           _parse_int(q.get("repeats"), "repeats", 1))
+                           _parse_int(q.get("repeats"), "repeats", 1),
+                           raw_sources.split(",") if raw_sources else None)
 
         def render() -> bytes:
             # Leading silence gives a recording started before playback its noise-only
             # lead-in (pre-flight needs at least MIN_LEAD_S of it).
-            signal = np.concatenate([np.zeros(int(SWEEP_LEAD_S * spec.sample_rate)),
-                                     generate_sweep(spec).signal])
+            signal = render_sequence(spec)
             buf = io.BytesIO()
             # Truncation toward zero keeps the file peak at or below the sweep's cap.
             pcm = np.trunc(signal * 32768).astype(np.int16)
@@ -533,9 +540,11 @@ def create_app(store: Store, *, analyse_inline: bool = False,
         assignments = [(_text(a.get("point_id"), "point_id"), _text(a.get("node_id"), "node_id"))
                        for a in raw]
         sweep = body.get("sweep") or {}
-        if not isinstance(sweep, dict) or set(sweep) - {"duration_s", "repeats"}:
-            raise ApiError(400, "bad_request", "sweep accepts duration_s and repeats only")
-        spec = _sweep_spec(sweep.get("duration_s", 6.0), sweep.get("repeats", 1))
+        if not isinstance(sweep, dict) or set(sweep) - {"duration_s", "repeats", "sources"}:
+            raise ApiError(400, "bad_request",
+                           "sweep accepts duration_s, repeats and sources only")
+        spec = _sweep_spec(sweep.get("duration_s", 6.0), sweep.get("repeats", 1),
+                           sweep.get("sources"))
         chain = body.get("player_chain")
         if chain is not None and not isinstance(chain, str):
             raise ApiError(400, "bad_request", "player_chain must be a string")

@@ -23,13 +23,13 @@ from collections.abc import Callable
 from datetime import UTC, datetime, timedelta
 from typing import Any
 
-from hifisync_acoustics.analysis.sweep import SweepSpec
+from hifisync_acoustics.analysis.sweep import LEAD_S, SweepSpec
 from hifisync_acoustics.store.db import CommandClosed, SessionNotAccepting, Store
 
 __all__ = ["CommandClosed", "SessionNotAccepting", "ack", "arm", "capture_s", "expire",
            "next_for", "sweep_file_s"]
 
-SWEEP_LEAD_S = 1.0  # digital silence before the sweep in sweep.wav
+SWEEP_LEAD_S = LEAD_S  # digital silence before the first sweep in sweep.wav
 MAX_CAPTURE_S = 60.0
 CAPTURE_TAIL_S = 3.0
 DEFAULT_START_WINDOW_S = 10.0
@@ -41,8 +41,9 @@ API_PREFIX = "/api/v1"
 
 
 def sweep_file_s(spec: SweepSpec) -> float:
-    """Length of ``GET /sweep.wav`` for ``spec``: lead-in, sweeps and the gaps between them."""
-    return SWEEP_LEAD_S + spec.repeats * spec.duration_s + (spec.repeats - 1) * spec.gap_s
+    """Length of ``GET /sweep.wav`` for ``spec``: lead-in, every source's sweeps and the gaps
+    between them."""
+    return SWEEP_LEAD_S + spec.sweep_count * spec.duration_s + (spec.sweep_count - 1) * spec.gap_s
 
 
 def capture_s(spec: SweepSpec, start_window_s: float) -> float:
