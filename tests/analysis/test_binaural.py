@@ -199,3 +199,19 @@ def test_mono_recording_has_no_binaural():
     res = analyse_recording(rec, generate_sweep(spec), None, None)
     assert res.binaural is None
     assert "binaural" not in res.to_json()
+
+
+def test_ild_corrected_by_both_channel_calibrations(stereo_point):
+    from hifisync_acoustics.analysis.calibration import CalibrationCurve
+
+    rec, sweep, raw = stereo_point
+    f = np.array([20.0, 20000.0])
+    flat = CalibrationCurve(f, np.zeros(2), None)
+    hot_right = CalibrationCurve(f, np.full(2, 2.0), None)  # channel 1 needs +2 dB
+    res = analyse_recording(rec, sweep, None, flat, hot_right)
+    for name in ("left", "right"):
+        for hz, v in raw.binaural[name].ild_db.items():
+            assert res.binaural[name].ild_db[hz] == pytest.approx(v - 2.0, abs=1e-9)
+        assert res.binaural[name].itd_us == raw.binaural[name].itd_us
+    only_one = analyse_recording(rec, sweep, None, flat)
+    assert only_one.binaural["left"].ild_db == raw.binaural["left"].ild_db

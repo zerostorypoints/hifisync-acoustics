@@ -77,7 +77,9 @@ def _rising_half_hann(n: int) -> np.ndarray:
     return 0.5 * (1 - np.cos(np.pi * np.arange(n) / n)) if n > 0 else np.empty(0)
 
 
-def _direct(ir: ImpulseResponse) -> np.ndarray:
+def direct_sound(ir: ImpulseResponse) -> np.ndarray:
+    """The direct-sound window of ``ir`` (module docstring, ``direct``); the peak sits at
+    index ``min(DIRECT_PRE_S * fs, peak_index)`` of the result."""
     fs = ir.sample_rate
     p = ir.peak_index
     pre = min(int(round(DIRECT_PRE_S * fs)), p)
@@ -115,7 +117,7 @@ def level_diff(left: ImpulseResponse, right: ImpulseResponse,
     if left.sample_rate != right.sample_rate:
         raise ValueError("responses have different sample rates")
     if window == "direct":
-        a, b = _direct(left), _direct(right)
+        a, b = direct_sound(left), direct_sound(right)
     elif window == "steady":
         a, b = left.samples, right.samples
     else:

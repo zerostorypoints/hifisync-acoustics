@@ -40,13 +40,14 @@ from starlette.types import ASGIApp, Message, Receive, Scope, Send
 
 from hifisync_acoustics import __version__, commands
 from hifisync_acoustics.analysis.calibration import (
+    CalibrationCurve,
     broadband_offset_db,
-    node_correction,
+    derive_correction,
     read_minidsp_cal,
+    write_minidsp_cal,
 )
 from hifisync_acoustics.analysis.ir import impulse_response
 from hifisync_acoustics.analysis.preflight import preflight
-from hifisync_acoustics.analysis.response import frequency_response
 from hifisync_acoustics.analysis.sweep import SweepSpec, generate_sweep, render_sequence
 from hifisync_acoustics.api import auth
 from hifisync_acoustics.messages import public_message
@@ -63,7 +64,7 @@ from hifisync_acoustics.store.db import (
     SessionNotAccepting,
     Store,
 )
-from hifisync_acoustics.wav import RecordingError, read_wav
+from hifisync_acoustics.wav import Recording, RecordingError, read_wav
 
 log = logging.getLogger(__name__)
 access_log = logging.getLogger("hifisync_acoustics.api.access")
@@ -74,6 +75,7 @@ API = "/api/v1"
 _PUBLIC_PATHS = frozenset({f"{API}/health", f"{API}/sweep.wav"})
 MAX_UPLOAD_BYTES = 200 * 1024 * 1024
 MIN_SWEEP_S, MAX_SWEEP_S, MAX_REPEATS = 0.5, 60.0, 10
+MAX_CAL_SESSIONS = 4  # placements in one calibration
 MIN_POLL_WAIT_S, MAX_POLL_WAIT_S, DEFAULT_POLL_WAIT_S = 1, 30, 25
 EXPIRY_INTERVAL_S = 5.0
 MAX_ACK_DETAIL = 200
@@ -486,34 +488,65 @@ def create_app(store: Store, *, analyse_inline: bool = False,
             raise ApiError(404, "not_found", "unknown node")
         return node
 
-    async def list_calibrations(request: Request) -> Response:
-        node = node_or_404(request.path_params["node_id"])
-        return JSONResponse([{
-            "version": c.version, "created_at": c.created_at, "reference_id": c.reference_id,
+    def calibration_json(c) -> dict[str, Any]:
+        return {
+            "version": c.version, "created_at": c.created_at, "channel": c.channel,
+            "kind": c.kind, "reference_id": c.reference_id,
             "reference_cal_name": c.reference_cal_name, "offset_db": c.offset_db,
             "conditions": c.conditions,
             "curve": {"freqs_hz": c.curve.freqs_hz.tolist(),
                       "correction_db": c.curve.correction_db.tolist(),
                       "sensitivity_db": c.curve.sensitivity_db},
-        } for c in store.list_calibrations(node["id"])])
+        }
+
+    async def list_calibrations(request: Request) -> Response:
+        node = node_or_404(request.path_params["node_id"])
+        return JSONResponse([calibration_json(c) for c in store.list_calibrations(node["id"])])
+
+    async def get_calibration_file(request: Request) -> Response:
+        node = node_or_404(request.path_params["node_id"])
+        try:
+            version = int(request.path_params["version"])
+        except ValueError:
+            raise ApiError(404, "not_found", "unknown calibration version") from None
+        c = store.get_calibration(node["id"], version)
+        if c is None:
+            raise ApiError(404, "not_found", "unknown calibration version")
+        return Response(write_minidsp_cal(c.curve), media_type="text/plain; charset=utf-8")
+
+    def store_curve(node_id: str, curve: CalibrationCurve, *, channel: int, kind: str,
+                    reference_id: str | None, cal_name: str | None,
+                    conditions: str | None) -> JSONResponse:
+        offset = broadband_offset_db(curve)
+        version = store.add_calibration(node_id, curve, offset, reference_id, cal_name,
+                                        conditions, channel=channel, kind=kind)
+        return JSONResponse({"version": version, "offset_db": offset,
+                             "sensitivity_db": curve.sensitivity_db}, status_code=201)
 
     async def add_calibration(request: Request) -> Response:
         node = node_or_404(request.path_params["node_id"])
         async with request.form(max_files=3, max_fields=10, max_part_size=64 * 1024) as form:
-            uploads = {}
-            for field in ("node", "reference", "reference_cal"):
-                part = form.get(field)
-                if not isinstance(part, UploadFile):
-                    raise ApiError(400, "bad_request", f"{field} file is missing")
-                uploads[field] = part
-
             def text_field(name: str) -> str | None:
                 v = form.get(name)
                 return v if isinstance(v, str) and v != "" else None
 
+            channel = _channel(text_field("channel"))
+            file_form = isinstance(form.get("cal_file"), UploadFile)
+            fields = ("cal_file",) if file_form else ("node", "reference", "reference_cal")
+            uploads = {}
+            for field in fields:
+                part = form.get(field)
+                if not isinstance(part, UploadFile):
+                    raise ApiError(400, "bad_request", f"{field} file is missing")
+                uploads[field] = part
+            if file_form and any(isinstance(form.get(f), UploadFile)
+                                 for f in ("node", "reference", "reference_cal")):
+                raise ApiError(400, "bad_request",
+                               "send either cal_file or node, reference and reference_cal")
             spec = _sweep_spec(_parse_float(text_field("duration"), "duration", 6.0),
                                _parse_int(text_field("repeats"), "repeats", 1))
-            cal_name = uploads["reference_cal"].filename
+            name_part = uploads["cal_file" if file_form else "reference_cal"]
+            cal_name = name_part.filename
             cal_name = re.split(r"[/\\]", cal_name)[-1][:255] if cal_name else None
             with tempfile.TemporaryDirectory(dir=tmp_root) as tmp:
                 paths = {f: Path(tmp) / f for f in uploads}
@@ -521,13 +554,80 @@ def create_app(store: Store, *, analyse_inline: bool = False,
                     with open(paths[f], "wb") as out:
                         await run_in_threadpool(shutil.copyfileobj, part.file, out)
                 try:
-                    curve, offset = await run_in_threadpool(_calibrate, paths, spec)
+                    if file_form:
+                        curve = await run_in_threadpool(read_minidsp_cal, paths["cal_file"])
+                    else:
+                        ref_cal = await run_in_threadpool(read_minidsp_cal,
+                                                          paths["reference_cal"])
+                        curve = await run_in_threadpool(
+                            _calibrate, [(paths["node"], paths["reference"])], spec, ref_cal,
+                            channel)
                 except RecordingError as exc:
                     labels = {str(p): f for f, p in paths.items()}
                     raise ApiError(400, exc.code, public_message(str(exc), labels)) from None
-        version = store.add_calibration(node["id"], curve, offset, text_field("reference_id"),
-                                        cal_name, text_field("conditions"))
-        return JSONResponse({"version": version, "offset_db": offset}, status_code=201)
+        return store_curve(node["id"], curve, channel=channel,
+                           kind="file" if file_form else "derived",
+                           reference_id=text_field("reference_id"), cal_name=cal_name,
+                           conditions=text_field("conditions"))
+
+    async def calibration_from_sessions(request: Request) -> Response:
+        node = node_or_404(request.path_params["node_id"])
+        body = await _json_object(request)
+        unknown = set(body) - {"reference_node", "sessions", "channel", "reference_id",
+                               "conditions"}
+        if unknown:
+            raise ApiError(400, "bad_request", f"unknown fields: {', '.join(sorted(unknown))}")
+        ref_node = node_or_404(_text(body.get("reference_node"), "reference_node"))
+        if ref_node["id"] == node["id"]:
+            raise ApiError(400, "bad_request", "reference_node must be another node")
+        ids = body.get("sessions")
+        if (not isinstance(ids, list) or not 1 <= len(ids) <= MAX_CAL_SESSIONS
+                or not all(isinstance(i, str) for i in ids)):
+            raise ApiError(400, "bad_request",
+                           f"sessions must be a list of 1 to {MAX_CAL_SESSIONS} session ids")
+        if len(set(ids)) != len(ids):
+            raise ApiError(400, "bad_request", "sessions must not repeat a session id")
+        raw_channel = body.get("channel", 0)
+        if type(raw_channel) is not int or raw_channel not in (0, 1):
+            raise ApiError(400, "bad_request", "channel must be 0 or 1")
+        reference_id = body.get("reference_id")
+        conditions = body.get("conditions")
+        for name, v in (("reference_id", reference_id), ("conditions", conditions)):
+            if v is not None and not isinstance(v, str):
+                raise ApiError(400, "bad_request", f"{name} must be a string")
+        pairs, spec = [], None
+        for sid in ids:
+            session = session_or_404(sid, False)
+            sweep = SweepSpec(**session["sweep"])
+            if len(sweep.sources) != 1:
+                raise ApiError(400, "bad_request",
+                               f"session {sid} plays more than one source")
+            if spec is not None and sweep != spec:
+                raise ApiError(400, "bad_request", f"session {sid} used another sweep")
+            spec = sweep
+            by_node = {p["node_id"]: p for p in session["points"]}
+            found = []
+            for who in (node["id"], ref_node["id"]):
+                point = by_node.get(who)
+                if point is None:
+                    raise ApiError(400, "bad_request", f"session {sid} has no point for {who}")
+                if not point.get("recording_path"):
+                    raise ApiError(400, "not_recorded",
+                                   f"session {sid} holds no recording from {who}")
+                found.append(store.data_dir / point["recording_path"])
+            pairs.append((found[0], found[1]))
+        ref_cal = store.latest_calibration(ref_node["id"], 0)
+        if ref_cal is None:
+            raise ApiError(409, "reference_uncalibrated",
+                           f"node {ref_node['id']} has no calibration for channel 0; "
+                           "upload its calibration file first")
+        try:
+            curve = await run_in_threadpool(_calibrate, pairs, spec, ref_cal.curve, raw_channel)
+        except RecordingError as exc:
+            raise ApiError(400, exc.code, public_message(str(exc), {})) from None
+        return store_curve(node["id"], curve, channel=raw_channel, kind="derived",
+                           reference_id=reference_id or ref_node["id"],
+                           cal_name=ref_cal.reference_cal_name, conditions=conditions)
 
     # sessions -------------------------------------------------------------
 
@@ -761,6 +861,10 @@ def create_app(store: Store, *, analyse_inline: bool = False,
         Route(f"{API}/nodes/{{node_id}}", put_node, methods=["PUT"]),
         Route(f"{API}/nodes/{{node_id}}/calibrations", staff(list_calibrations), methods=["GET"]),
         Route(f"{API}/nodes/{{node_id}}/calibrations", staff(add_calibration), methods=["POST"]),
+        Route(f"{API}/nodes/{{node_id}}/calibrations/from-sessions",
+              staff(calibration_from_sessions), methods=["POST"]),
+        Route(f"{API}/nodes/{{node_id}}/calibrations/{{version}}/file",
+              staff(get_calibration_file), methods=["GET"]),
         # Node routes: unwrapped, guarded by require_own_node.
         Route(f"{API}/nodes/{{node_id}}/commands/next", next_command, methods=["GET"]),
         Route(f"{API}/nodes/{{node_id}}/commands/{{command_id}}", ack_command, methods=["POST"]),
@@ -792,20 +896,42 @@ def _incomplete(received: int, declared: str | None) -> ApiError:
                     f"the upload ended after {received} bytes ({expected}); nothing was stored")
 
 
-def _calibrate(paths: dict[str, Path], spec: SweepSpec):
-    """Correction curve and 1 kHz offset; both recordings must pass pre-flight first."""
+def _channel(raw: str | None) -> int:
+    if raw in (None, "", "0"):
+        return 0
+    if raw == "1":
+        return 1
+    raise ApiError(400, "bad_request", "channel must be 0 or 1")
+
+
+def _select_channel(rec: Recording, channel: int, label: str) -> Recording:
+    if channel == 0:
+        return rec
+    if rec.channels < 2:
+        raise RecordingError("unsupported_format",
+                             f"the {label} recording has no channel {channel}")
+    return dataclasses.replace(rec, samples=rec.channel(channel), channel_used=channel)
+
+
+def _calibrate(pairs: list[tuple[Path, Path]], spec: SweepSpec, ref_cal: CalibrationCurve,
+               channel: int = 0) -> CalibrationCurve:
+    """The node's correction from (node, reference) recordings of one or more placements;
+    every recording must pass pre-flight first. The node's ``channel`` is used, the
+    reference's channel 0."""
     sweep = generate_sweep(spec)
-    frs = {}
-    for f in ("node", "reference"):
-        rec = read_wav(paths[f])
-        pre = preflight(rec, sweep)
-        if not pre.ok:
-            raise RecordingError(pre.code, f"the {f} recording failed pre-flight: {pre.code}")
-        frs[f] = frequency_response(impulse_response(rec, sweep), 1 / 6)
-    node_fr, ref_fr = frs["node"], frs["reference"]
-    ref_cal = read_minidsp_cal(paths["reference_cal"])
-    curve = node_correction(node_fr, ref_fr, ref_cal)
+    irs = []
+    for node_path, ref_path in pairs:
+        pair = []
+        for label, path, ch in (("node", node_path, channel), ("reference", ref_path, 0)):
+            rec = _select_channel(read_wav(path), ch, label)
+            pre = preflight(rec, sweep)
+            if not pre.ok:
+                raise RecordingError(pre.code, f"the {label} recording failed pre-flight: "
+                                     f"{pre.code}")
+            pair.append(impulse_response(rec, sweep))
+        irs.append((pair[0], pair[1]))
+    curve = derive_correction(irs, ref_cal)
     offset = broadband_offset_db(curve)
     if not (math.isfinite(offset) and np.all(np.isfinite(curve.correction_db))):
         raise RecordingError("no_signal", "the node or reference recording has no usable signal")
-    return curve, offset
+    return curve

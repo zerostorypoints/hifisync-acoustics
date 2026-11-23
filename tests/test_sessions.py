@@ -129,11 +129,11 @@ def test_unexpected_exception_marks_point_analysis_error(env, tmp_path, monkeypa
     real = sessions.analyse_recording
     calls = []
 
-    def flaky(rec, sweep, dims, cal):
+    def flaky(rec, sweep, dims, cal, cal1=None):
         calls.append(1)
         if len(calls) == 1:
             raise RuntimeError("secret contents")
-        return real(rec, sweep, dims, cal)
+        return real(rec, sweep, dims, cal, cal1)
 
     monkeypatch.setattr(sessions, "analyse_recording", flaky)
     analyse_session(store, sid)

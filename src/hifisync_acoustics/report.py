@@ -156,6 +156,15 @@ def _source_result(ir: ImpulseResponse, dims: RoomDimensions | None,
                         reflections=early_reflections(ir, ir.sample_rate))
 
 
+def _at(curve: CalibrationCurve, hz: float) -> float:
+    return float(np.interp(np.log(hz), np.log(curve.freqs_hz), curve.correction_db))
+
+
+def _corrected_ild(b: Binaural, c0: CalibrationCurve, c1: CalibrationCurve) -> Binaural:
+    return dataclasses.replace(b, ild_db={f: v + _at(c0, f) - _at(c1, f)
+                                          for f, v in b.ild_db.items()})
+
+
 def _preflight_sources(rec: Recording, sweep: Sweep) -> tuple[dict[str, PreflightResult], str | None]:
     """Pre-flight of each source on channel 0, then on channel 1 for a 2-channel recording,
     and the failure detail of the first check that fails.
@@ -205,7 +214,11 @@ def analyse_recording(
     sweep: Sweep,
     dims: RoomDimensions | None,
     calibration: CalibrationCurve | None,
+    calibration_ch1: CalibrationCurve | None = None,
 ) -> PointResult:
+    """``calibration`` is channel 0's and corrects the frequency responses. With
+    ``calibration_ch1`` as well, a 2-channel recording's ILD is corrected by
+    ``c0 - c1`` at each octave centre; ITD and IACC are not corrected."""
     meta = {
         "sweep": dataclasses.asdict(sweep.spec),
         "channel_used": rec.channel_used,
@@ -234,6 +247,9 @@ def analyse_recording(
     if rec.channels == 2:
         right_ear = ir_per_source(rec, sweep, spec, channel=1)
         ears = {name: binaural(irs[name], right_ear[name], rec.sample_rate) for name in irs}
+        if calibration is not None and calibration_ch1 is not None:
+            ears = {name: _corrected_ild(b, calibration, calibration_ch1)
+                    for name, b in ears.items()}
 
     first = sources[spec.sources[0]]
     schroeder = None

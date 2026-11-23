@@ -19,6 +19,9 @@ dependencies = [
     "zeroconf>=0.154.0",
 ]
 
+[project.optional-dependencies]
+reference = ["sounddevice>=0.5"]
+
 [project.scripts]
 hifisync-acoustics = "hifisync_acoustics.cli:main"
 

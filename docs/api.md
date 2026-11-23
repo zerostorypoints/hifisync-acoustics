@@ -63,11 +63,11 @@ hifisync-acoustics token revoke NAME
 
 | Status | Codes |
 | --- | --- |
-| 400 | `bad_request`, `token_in_url`, `unknown_room`, `capture_too_long` (arming), `incomplete_body` (an upload shorter than its `Content-Length`); a recording error code for a calibration upload (`unsupported_format`, `rate_mismatch`, `too_short`, `bad_calibration`, `clipped`, `no_signal`) |
+| 400 | `bad_request`, `token_in_url`, `unknown_room`, `capture_too_long` (arming), `incomplete_body` (an upload shorter than its `Content-Length`); a recording error code for a calibration upload (`unsupported_format`, `rate_mismatch`, `too_short`, `bad_calibration`, `clipped`, `no_signal`), `not_recorded` (a calibration session without a recording) |
 | 401 | `unauthorized` |
 | 403 | `forbidden` (a `node` token on a route or node it may not use) |
 | 404 | `not_found` |
-| 409 | `managed_by_ha`, `session_not_accepting`, `command_closed` (an ack for a command that is `done`, `failed` or `expired`) |
+| 409 | `managed_by_ha`, `session_not_accepting`, `command_closed` (an ack for a command that is `done`, `failed` or `expired`), `reference_uncalibrated` |
 | 413 | `body_too_large` (bodies over 200 MB) |
 
 Error messages carry no file system paths.
@@ -126,26 +126,71 @@ Coordinates and room axes follow [coordinates.md](coordinates.md): `width_m` is 
   type answers 400. Only the fields in the body change, and `null` clears a field. A new node
   needs `esphome_name`. Other fields answer 400.
 - `GET /nodes/{id}/calibrations` lists the node's calibrations, oldest first: `version`,
-  `created_at`, `reference_id`, `reference_cal_name`, `offset_db`, `conditions` and `curve`
-  (`freqs_hz`, `correction_db`, `sensitivity_db`).
-- `POST /nodes/{id}/calibrations` takes `multipart/form-data` from a simultaneous recording of
-  the sweep by the node and by a calibrated reference microphone:
+  `created_at`, `channel` (0 or 1), `kind`, `reference_id`, `reference_cal_name`, `offset_db`,
+  `conditions` and `curve` (`freqs_hz`, `correction_db`, `sensitivity_db`). Versions count per
+  node across channels. `kind` is `file`, a microphone's own calibration file, or `derived`,
+  computed against a reference microphone. `sensitivity_db` is the miniDSP `Sens Factor`: the
+  RMS dBFS reading at 94 dB SPL, where a full-scale sine reads −3.01 dBFS. `null` means
+  unknown.
+- `GET /nodes/{id}/calibrations/{version}/file` returns that version as a miniDSP calibration
+  file (`text/plain`). It has a quoted header with `Sens Factor` when the sensitivity is known,
+  then `frequency deviation` rows. The deviation is the negated correction.
+- `POST /nodes/{id}/calibrations` takes `multipart/form-data` in one of two forms.
+
+  A calibrated microphone's own file, for a reference microphone:
+
+  | Field | Kind | |
+  | --- | --- | --- |
+  | `cal_file` | file | the miniDSP calibration `.txt` |
+  | `channel` | text | optional, `0` (default) or `1` |
+  | `reference_id`, `conditions` | text | optional |
+
+  A simultaneous recording of the sweep by the node and by a calibrated reference microphone:
 
   | Field | Kind | |
   | --- | --- | --- |
   | `node` | file | the node's WAV |
   | `reference` | file | the reference microphone's WAV |
   | `reference_cal` | file | the reference microphone's miniDSP calibration `.txt` |
+  | `channel` | text | optional, the node's channel, `0` (default) or `1` |
   | `reference_id` | text | optional, for example a serial number |
   | `conditions` | text | optional, for example temperature or placement |
   | `duration`, `repeats` | text | the sweep that was played; default 6 and 1 |
 
-  The engine computes both frequency responses at 1/6-octave smoothing. The correction is
-  `reference + reference_cal − node`, and `offset_db` is its value at 1 kHz. The answer is 201
-  `{"version", "offset_db"}`. An unusable file answers 400 with its recording error code.
-  Both recordings must pass the pre-flight check, as session recordings do; one that fails
-  answers 400 `clipped` or `no_signal`, the message names `node` or `reference`, and no
-  calibration version is stored.
+  Each recording's response combines two parts:
+  - below 500 Hz, the full impulse response;
+  - above 500 Hz, the direct sound: 0.5 ms before the peak to 5 ms after it.
+
+  Both are smoothed to 1/6 octave and blended over the octave around 500 Hz. A reflection
+  more than about 5 ms after the direct sound stays out above 500 Hz; an earlier one must
+  reach both capsules alike. The correction is `reference + reference_cal − node`, and
+  `offset_db` is its value at 1 kHz. The correction carries the level difference too, so a
+  corrected node reading equals the calibrated reference's, and the node's `sensitivity_db` is
+  the reference's `Sens Factor` (`null` when the reference file has none).
+
+  The answer is 201 `{"version", "offset_db", "sensitivity_db"}`. Errors:
+  - An unusable file answers 400 with its recording error code.
+  - Both recordings must pass the pre-flight check, as session recordings do. One that fails
+    answers 400 `clipped` or `no_signal`, and the message names `node` or `reference`.
+  - Channel 1 of a one-channel node recording answers 400 `unsupported_format`.
+  - No calibration version is stored on any error.
+- `POST /nodes/{id}/calibrations/from-sessions` derives the node's calibration from sessions
+  that recorded it and a reference node side by side. Each session is one placement of the two
+  microphones, and the correction is the mean over the placements. The body is
+  `{"reference_node", "sessions", "channel", "reference_id", "conditions"}`:
+  - `sessions` holds 1 to 4 session ids;
+  - `channel` is the node's channel, default 0;
+  - `reference_id` defaults to the reference node's id.
+
+  The reference node's latest channel-0 calibration is the reference curve. The computation,
+  answer and recording errors are those of the form above. Other errors:
+
+  | Status | Code | When |
+  | --- | --- | --- |
+  | 404 | | an unknown node or session |
+  | 400 | `bad_request` | a session without a point for both nodes, a sweep with more than one source, or sessions with different sweeps |
+  | 400 | `not_recorded` | a point of either node holds no recording; the message names the session |
+  | 409 | `reference_uncalibrated` | the reference node has no calibration |
 
 ### Sessions
 
@@ -217,6 +262,15 @@ reaches `recording` with its first upload or when it is armed.
   `schroeder_hz` and `preflight` are those of the first source, so a `["both"]` session
   reads as before. More fields:
 
+  - `meta.calibration`: `{"channel0", "channel1", "spl_at_0dbfs_db"}`.
+    - `channel0` and `channel1` are the calibration versions applied, or `null` for none.
+      Channel 1's is applied only together with channel 0's.
+    - Channel 0's latest calibration corrects every `fr`, and `calibrated` is then `true`.
+      When the recording has 2 channels and both channels are calibrated, each source's
+      `binaural.ild_db` is corrected by `c0 − c1` at the octave centre. ITD and IACC are not
+      corrected.
+    - `spl_at_0dbfs_db` is `94 − sensitivity_db` of channel 0's calibration: the SPL of an RMS
+      reading of 0 dBFS, or `null` when the sensitivity is unknown.
   - `sources`: `{name: {fr, decay, peaks, direct_ms, reflections}}`, one entry per source.
     `fr`, `decay` and `peaks` have the form of the top-level fields. `direct_ms` is the
     arrival of the source's direct sound after the earliest source's at this point (0 for

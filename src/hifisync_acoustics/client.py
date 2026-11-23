@@ -276,35 +276,38 @@ def _parse_upnp(args) -> tuple[str, str] | None:
         raise ClientError(f"bad --upnp renderer: {exc}") from exc
 
 
-def run_measure(args, out: Callable[[str], None] = print,
-                ask: Callable[[str], str] = input) -> int:
-    spec = _sweep_spec(args)
-    engine = Engine(args.url, read_token(args.token_file))
-    play = _parse_play(args.play)
-    renderer = _parse_upnp(args)
-    if not args.yes:
-        try:
-            ask("Set the volume on your player now; nothing here changes it. "
-                "Press Enter to continue. ")
-        except EOFError as exc:
-            raise ClientError("no confirmation: input closed (use --yes)") from exc
+@dataclass
+class SessionRun:
+    session_id: str
+    final: dict[str, Any]
+    results: dict[str, dict[str, Any]]  # point id -> the point of GET /results
 
-    sweep_json = {"duration_s": args.duration, "repeats": args.repeats}
+    @property
+    def ok(self) -> bool:
+        return self.final["state"] == "done" and all(
+            p["state"] == "done" for p in self.final["points"])
+
+
+def _run_session(engine: Engine, args, spec: SweepSpec, assignments: list[tuple[str, str]],
+                 play: list[str] | None, renderer: tuple[str, str] | None,
+                 out: Callable[[str], None]) -> SessionRun | None:
+    """Create, arm, play and wait for one session. None when it never got to analysis."""
+    sweep_json: dict[str, Any] = {"duration_s": args.duration, "repeats": args.repeats}
     if spec.sources != ("both",):
         sweep_json["sources"] = list(spec.sources)
     session = engine.json("POST", "/sessions", {
         "room_id": args.room, "sweep": sweep_json,
-        "assignments": [{"point_id": p, "node_id": n} for p, n in args.assign]})
+        "assignments": [{"point_id": p, "node_id": n} for p, n in assignments]})
     sid = session["id"]
     engine.json("POST", f"/sessions/{sid}/arm", {"start_window_s": args.start_window})
     out(f"session {sid} armed; waiting for nodes")
 
     ready = _wait_ready(engine, sid, out)
     if ready is None:
-        return EXIT_FAILED
+        return None
     _, first_recording = ready
 
-    params = {"duration": args.duration, "repeats": args.repeats}
+    params: dict[str, Any] = {"duration": args.duration, "repeats": args.repeats}
     if spec.sources != ("both",):
         params["sources"] = ",".join(spec.sources)
     query = urllib.parse.urlencode(params)
@@ -317,7 +320,7 @@ def run_measure(args, out: Callable[[str], None] = print,
         if remaining <= 0:
             out("error: start window passed before all nodes were ready; "
                 "re-run with a larger --start-window")
-            return EXIT_FAILED
+            return None
         if renderer:
             sweep_url = f"{args.url.rstrip('/')}{API_PREFIX}/sweep.wav?{query}"
             try:
@@ -347,21 +350,41 @@ def run_measure(args, out: Callable[[str], None] = print,
         Path(path).unlink(missing_ok=True)
     if final is None:
         out(f"error: session {sid} did not finish within {timeout:.0f} s")
-        return EXIT_FAILED
-
+        return None
     results = {p["point_id"]: p for p in
                engine.json("GET", f"/sessions/{sid}/results")["points"]}
-    ok = final["state"] == "done"
-    for p in final["points"]:
-        r = results.get(p["point_id"], {})
+    return SessionRun(sid, final, results)
+
+
+def _confirm(args, ask: Callable[[str], str], prompt: str) -> None:
+    if args.yes:
+        return
+    try:
+        ask(prompt)
+    except EOFError as exc:
+        raise ClientError("no confirmation: input closed (use --yes)") from exc
+
+
+def run_measure(args, out: Callable[[str], None] = print,
+                ask: Callable[[str], str] = input) -> int:
+    spec = _sweep_spec(args)
+    engine = Engine(args.url, read_token(args.token_file))
+    play = _parse_play(args.play)
+    renderer = _parse_upnp(args)
+    _confirm(args, ask, "Set the volume on your player now; nothing here changes it. "
+                        "Press Enter to continue. ")
+    run = _run_session(engine, args, spec, args.assign, play, renderer, out)
+    if run is None:
+        return EXIT_FAILED
+    for p in run.final["points"]:
+        r = run.results.get(p["point_id"], {})
         out(_summary_line(p, r.get("result")))
         if spec.sources != ("both",):
             for line in _stereo_lines(r.get("result") or {}):
                 out(line)
-        ok = ok and p["state"] == "done"
-    if final.get("failure"):
-        out(f"session failed: {final['failure']}")
-    return EXIT_OK if ok else EXIT_FAILED
+    if run.final.get("failure"):
+        out(f"session failed: {run.final['failure']}")
+    return EXIT_OK if run.ok else EXIT_FAILED
 
 
 def measure_main(args) -> int:
