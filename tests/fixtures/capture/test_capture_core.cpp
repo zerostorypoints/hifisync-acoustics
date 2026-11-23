@@ -1,5 +1,6 @@
 // Host test of capture_core.h. With no arguments it runs the assertions and prints "ok" lines.
-// With `<num_samples> <rate>` it prints the 44-byte WAV header as hex, for comparison in pytest.
+// With `<num_frames> <rate> [channels]` it prints the 44-byte WAV header as hex, for comparison in
+// pytest. channels defaults to 1.
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
@@ -23,9 +24,11 @@ static uint32_t le32(const uint8_t *p) { return p[0] | (p[1] << 8) | (p[2] << 16
 static uint16_t le16(const uint8_t *p) { return p[0] | (p[1] << 8); }
 
 int main(int argc, char **argv) {
-  if (argc == 3) {
+  if (argc == 3 || argc == 4) {
     uint8_t h[44];
-    wav_header(h, (uint32_t) std::strtoul(argv[1], nullptr, 10), (uint32_t) std::strtoul(argv[2], nullptr, 10));
+    const uint16_t channels = argc == 4 ? (uint16_t) std::strtoul(argv[3], nullptr, 10) : 1;
+    wav_header(h, (uint32_t) std::strtoul(argv[1], nullptr, 10), (uint32_t) std::strtoul(argv[2], nullptr, 10),
+               channels);
     for (int i = 0; i < 44; i++) std::printf("%02x", h[i]);
     std::printf("\n");
     return 0;
@@ -51,6 +54,29 @@ int main(int argc, char **argv) {
   CHECK(le16(h + 34) == 16);
   CHECK(std::memcmp(h + 36, "data", 4) == 0);
   CHECK(le32(h + 40) == 1920000);
+
+  // Stereo: 20 s of 48 kHz, 2 channels = 960000 frames, 3840000 bytes.
+  wav_header(h, 960000, 48000, 2);
+  CHECK(le32(h + 4) == 36 + 3840000);
+  CHECK(le16(h + 22) == 2);
+  CHECK(le32(h + 24) == 48000);
+  CHECK(le32(h + 28) == 192000);
+  CHECK(le16(h + 32) == 4);
+  CHECK(le16(h + 34) == 16);
+  CHECK(le32(h + 40) == 3840000);
+
+  CHECK(frame_bytes(1) == 2);
+  CHECK(frame_bytes(2) == 4);
+  CHECK(bytes_for(20.0f, 48000, 1) == 1920000);
+  CHECK(bytes_for(20.0f, 48000, 2) == 3840000);
+  CHECK(bytes_for(60.0f, 48000, 1) == 5760000);
+  CHECK(bytes_for(40.0f, 48000, 2) == 7680000);
+  CHECK(bytes_for(0.0f, 48000, 2) == 0);
+  CHECK(seconds_in(7680000, 48000, 2) == 40.0f);
+  CHECK(seconds_in(7679999, 48000, 2) == 39.0f);
+  CHECK(seconds_in(8388608, 48000, 2) == 43.0f);  // 8 MiB, before anything else uses PSRAM
+  CHECK(seconds_in(5760000, 48000, 1) == 60.0f);
+  CHECK(seconds_in(1000, 0, 2) == 0.0f);
 
   CHECK(capture_fits(60.0f, 60.0f));
   CHECK(!capture_fits(60.1f, 60.0f));

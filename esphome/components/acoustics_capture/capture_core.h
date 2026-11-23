@@ -1,7 +1,8 @@
 #pragma once
 
 // Host-testable core of the acoustics_capture component: buffer sizing, WAV header and
-// reconnect back-off. No ESPHome or ESP-IDF includes, so tests build it with a plain C++ compiler.
+// reconnect back-off, for 1 or 2 channels of 16-bit PCM. No ESPHome or ESP-IDF includes, so
+// tests build it with a plain C++ compiler.
 
 #include <cmath>
 #include <cstddef>
@@ -13,11 +14,28 @@ constexpr uint32_t SAMPLE_RATE = 48000;
 constexpr uint32_t BACKOFF_BASE_MS = 1000;
 constexpr uint32_t BACKOFF_MAX_MS = 30000;
 
-// Number of samples for capture_s seconds at rate Hz, rounded up.
+constexpr uint16_t BYTES_PER_SAMPLE = 2;  // 16-bit PCM
+constexpr uint16_t MAX_CHANNELS = 2;
+
+// Number of frames (one sample per channel) for capture_s seconds at rate Hz, rounded up.
 inline size_t samples_for(float capture_s, uint32_t rate) {
   if (!(capture_s > 0.0f)) return 0;
   // Computed in double so e.g. 20.0 s * 48000 does not pick up float error before the ceiling.
   return (size_t) std::ceil((double) capture_s * (double) rate - 1e-6);
+}
+
+// Bytes of one frame of interleaved 16-bit PCM.
+inline size_t frame_bytes(uint16_t channels) { return (size_t) channels * BYTES_PER_SAMPLE; }
+
+// Capture buffer size in bytes for capture_s seconds of 16-bit PCM with `channels` channels.
+inline size_t bytes_for(float capture_s, uint32_t rate, uint16_t channels) {
+  return samples_for(capture_s, rate) * frame_bytes(channels);
+}
+
+// Whole seconds of capture that fit in `bytes` (for example the largest free PSRAM block).
+inline float seconds_in(size_t bytes, uint32_t rate, uint16_t channels) {
+  if (rate == 0 || channels == 0) return 0.0f;
+  return (float) (bytes / frame_bytes(channels) / rate);
 }
 
 namespace detail {
@@ -36,11 +54,12 @@ inline void put_tag(uint8_t *p, const char *tag) {
 }
 }  // namespace detail
 
-// 44-byte canonical WAV header: PCM, 1 channel, 16-bit, little-endian.
-inline void wav_header(uint8_t out[44], uint32_t num_samples, uint32_t rate) {
-  const uint16_t channels = 1, bits = 16;
+// 44-byte canonical WAV header: PCM, 16-bit, little-endian, `channels` interleaved channels.
+// num_frames counts frames (one sample per channel), so data is num_frames * channels * 2 bytes.
+inline void wav_header(uint8_t out[44], uint32_t num_frames, uint32_t rate, uint16_t channels = 1) {
+  const uint16_t bits = 16;
   const uint16_t block_align = channels * bits / 8;
-  const uint32_t data_bytes = num_samples * block_align;
+  const uint32_t data_bytes = num_frames * block_align;
   detail::put_tag(out + 0, "RIFF");
   detail::put_le32(out + 4, 36 + data_bytes);
   detail::put_tag(out + 8, "WAVE");

@@ -1,7 +1,8 @@
 """acoustics_capture: a measurement node for the hifisync-acoustics engine.
 
-The node long-polls the engine for a record command, records 48 kHz/16-bit mono from a passive
-microphone source into PSRAM, uploads the WAV and acks. docs/node-firmware.md describes the YAML,
+The node long-polls the engine for a record command, records 48 kHz/16-bit PCM (1 channel, or 2
+with `channels: [0, 1]` on a stereo microphone) from a passive microphone source into PSRAM,
+uploads the WAV and acks. docs/node-firmware.md describes the YAML,
 docs/api.md ("Node protocol") the HTTP exchange.
 """
 
@@ -10,11 +11,17 @@ import re
 import esphome.codegen as cg
 from esphome.components import esp32, microphone, text_sensor
 import esphome.config_validation as cv
-from esphome.const import CONF_ID, CONF_MICROPHONE, CONF_STATE, PLATFORM_ESP32
+from esphome.const import (
+    CONF_CHANNELS,
+    CONF_ID,
+    CONF_MICROPHONE,
+    CONF_STATE,
+    PLATFORM_ESP32,
+)
 from esphome.core import CORE
 
 CODEOWNERS = ["@zerostorypoints"]
-# psram: the capture buffer (up to 80 s, 7.7 MB) only fits in PSRAM.
+# psram: the capture buffer (at most 7.68 MB: 80 s mono or 40 s stereo) only fits in PSRAM.
 DEPENDENCIES = ["microphone", "network", "psram"]
 AUTO_LOAD = ["json", "text_sensor"]
 
@@ -26,6 +33,11 @@ CONF_POLL_WAIT = "poll_wait"
 
 # The engine's sweeps are generated at this rate; capture_core.h has the same constant.
 SAMPLE_RATE = 48000
+# The longest capture the node accepts by default, per channel count.
+DEFAULT_MAX_CAPTURE_S = {1: 60, 2: 40}
+# The capture buffer is at most this many channel-seconds: 80 s mono or 40 s stereo, 7.68 MB at
+# 48 kHz/16 bit. That fits in 8 MB PSRAM with room for the rest of the firmware.
+MAX_CHANNEL_SECONDS = 80
 
 acoustics_capture_ns = cg.esphome_ns.namespace("acoustics_capture")
 AcousticsCaptureComponent = acoustics_capture_ns.class_(
@@ -54,6 +66,20 @@ def _node_id(value):
     return value
 
 
+def _max_capture(config):
+    channels = len(config[CONF_MICROPHONE][CONF_CHANNELS])
+    if CONF_MAX_CAPTURE not in config:
+        config[CONF_MAX_CAPTURE] = cv.TimePeriod(seconds=DEFAULT_MAX_CAPTURE_S[channels])
+    limit_s = MAX_CHANNEL_SECONDS // channels
+    if config[CONF_MAX_CAPTURE].total_milliseconds > limit_s * 1000:
+        raise cv.Invalid(
+            f"max_capture with {channels} channels may be at most {limit_s}s: the PSRAM buffer "
+            f"holds at most {MAX_CHANNEL_SECONDS} channel-seconds",
+            [CONF_MAX_CAPTURE],
+        )
+    return config
+
+
 CONFIG_SCHEMA = cv.All(
     cv.Schema(
         {
@@ -62,12 +88,13 @@ CONFIG_SCHEMA = cv.All(
                 min_bits_per_sample=16,
                 max_bits_per_sample=16,
                 min_channels=1,
-                max_channels=1,
+                max_channels=2,
             ),
             cv.Required(CONF_ENGINE_URL): _engine_url,
             cv.Optional(CONF_NODE_ID): _node_id,
             cv.Required(CONF_TOKEN): cv.string_strict,
-            cv.Optional(CONF_MAX_CAPTURE, default="60s"): cv.All(
+            # Default 60s with 1 channel, 40s with 2 (_max_capture).
+            cv.Optional(CONF_MAX_CAPTURE): cv.All(
                 cv.positive_time_period_milliseconds,
                 cv.Range(min=cv.TimePeriod(seconds=1), max=cv.TimePeriod(seconds=80)),
             ),
@@ -78,6 +105,7 @@ CONFIG_SCHEMA = cv.All(
             cv.Optional(CONF_STATE): text_sensor.text_sensor_schema(),
         }
     ).extend(cv.COMPONENT_SCHEMA),
+    _max_capture,
     cv.only_on([PLATFORM_ESP32]),
 )
 
@@ -103,6 +131,7 @@ async def to_code(config):
         config[CONF_MICROPHONE], passive=True
     )
     cg.add(var.set_microphone_source(mic_source))
+    cg.add(var.set_channels(len(config[CONF_MICROPHONE][CONF_CHANNELS])))
 
     cg.add(var.set_engine_url(config[CONF_ENGINE_URL]))
     cg.add(var.set_node_id(config.get(CONF_NODE_ID, CORE.name)))

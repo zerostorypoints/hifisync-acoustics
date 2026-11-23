@@ -30,3 +30,4 @@ jobs:
           key: esphome-idf-2026.9.1
       - run: cp esphome/examples/secrets.example.yaml esphome/examples/secrets.yaml
       - run: uvx esphome@2026.9.1 compile esphome/examples/capture-node.yaml
+      - run: uvx esphome@2026.9.1 compile esphome/examples/capture-node-stereo.yaml
