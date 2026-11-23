@@ -585,14 +585,16 @@ def create_app(store: Store, *, analyse_inline: bool = False,
                 or not all(isinstance(i, str) for i in ids)):
             raise ApiError(400, "bad_request",
                            f"sessions must be a list of 1 to {MAX_CAL_SESSIONS} session ids")
+        if len(set(ids)) != len(ids):
+            raise ApiError(400, "bad_request", "sessions must not repeat a session id")
         raw_channel = body.get("channel", 0)
-        if raw_channel not in (0, 1) or isinstance(raw_channel, bool):
+        if type(raw_channel) is not int or raw_channel not in (0, 1):
             raise ApiError(400, "bad_request", "channel must be 0 or 1")
-        ref_cal = store.latest_calibration(ref_node["id"], 0)
-        if ref_cal is None:
-            raise ApiError(409, "reference_uncalibrated",
-                           f"node {ref_node['id']} has no calibration for channel 0; "
-                           "upload its calibration file first")
+        reference_id = body.get("reference_id")
+        conditions = body.get("conditions")
+        for name, v in (("reference_id", reference_id), ("conditions", conditions)):
+            if v is not None and not isinstance(v, str):
+                raise ApiError(400, "bad_request", f"{name} must be a string")
         pairs, spec = [], None
         for sid in ids:
             session = session_or_404(sid, False)
@@ -614,15 +616,15 @@ def create_app(store: Store, *, analyse_inline: bool = False,
                                    f"session {sid} holds no recording from {who}")
                 found.append(store.data_dir / point["recording_path"])
             pairs.append((found[0], found[1]))
+        ref_cal = store.latest_calibration(ref_node["id"], 0)
+        if ref_cal is None:
+            raise ApiError(409, "reference_uncalibrated",
+                           f"node {ref_node['id']} has no calibration for channel 0; "
+                           "upload its calibration file first")
         try:
             curve = await run_in_threadpool(_calibrate, pairs, spec, ref_cal.curve, raw_channel)
         except RecordingError as exc:
             raise ApiError(400, exc.code, public_message(str(exc), {})) from None
-        reference_id = body.get("reference_id")
-        conditions = body.get("conditions")
-        for name, v in (("reference_id", reference_id), ("conditions", conditions)):
-            if v is not None and not isinstance(v, str):
-                raise ApiError(400, "bad_request", f"{name} must be a string")
         return store_curve(node["id"], curve, channel=raw_channel, kind="derived",
                            reference_id=reference_id or ref_node["id"],
                            cal_name=ref_cal.reference_cal_name, conditions=conditions)

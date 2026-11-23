@@ -40,8 +40,10 @@ reference node.
     log2 f).
 - **Correction for one placement:** `reference + reference_cal − node`, combined responses, on
   the node's grid. With several placements, the mean of the corrections in dB.
-- **Node sensitivity**, when the reference calibration has one:
-  `sens_node = sens_ref − (offset − ref_cal(1 kHz))`, where `offset` is the correction at 1 kHz.
+- **Node sensitivity:** the reference's `Sens Factor`, unchanged. The correction already
+  carries the level difference, so a corrected node reading equals the calibrated reference's.
+  *(Revised after the final review: the first formula, `sens_ref − (offset − ref_cal(1 kHz))`,
+  counted the level difference twice.)*
 - **Calibration channel:**
   - Calibrations are per node and channel (0 or 1). Versions count per node across channels.
   - Analysis applies the latest calibration of channel 0 to the frequency responses, as today.
@@ -64,8 +66,11 @@ reference node.
 
 ## Review Focus
 
-1. **A reflection that reaches one microphone differently**, because they stand 1 cm apart. Above
-   the crossover it must not enter the correction. *(Task 1 `test_gated_correction_ignores_reflection`.)*
+1. **A reflection that reaches one microphone differently**, because they stand 1 cm apart.
+   Above the crossover it must not enter the correction when it arrives after the 5 ms direct
+   window. An earlier one is weighted by the falling half-Hann, so it must reach both capsules
+   alike. *(Task 1 `test_gated_correction_ignores_late_reflection`,
+   `test_reflection_common_to_both_cancels`; revised after the final review.)*
 2. **A fixed placement error**, such as the node being 1 dB hotter at its spot. It cancels when
    the two placements are averaged. *(Task 1 `test_two_placements_cancel_position_error`.)*
 3. **A reference without a calibration:** `from-sessions` answers 409 `reference_uncalibrated`
@@ -95,8 +100,8 @@ test `tests/analysis/test_calibration.py`.
     the direct sound. The correction above 1 kHz is within ±0.5 dB of 0.
   - `test_two_placements_cancel_position_error`: the node reads +1 dB in placement A and
     −1 dB in placement B; the mean correction is within 0.1 dB.
-  - `test_sensitivity_transfers`: with ref sens −1.0 and the node 6 dB quieter, the node
-    sens is −7.0 ±0.1.
+  - `test_corrected_node_reads_the_reference_spl`: with ref sens −1.0 and the node 6 dB
+    quieter, the corrected node gives the reference's SPL.
   - `test_writer_round_trip`: `read_minidsp_cal(write_minidsp_cal(c))` returns `c` within 0.01 dB.
 - [ ] Implement, run the suite, commit "Derive node calibrations from gated and full responses".
 

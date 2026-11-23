@@ -50,7 +50,7 @@ async def test_from_sessions_averages_placements(client, app_token):
     out = r.json()
     # The node hears half the reference's level (-6.02 dB); the placements are +-1 dB.
     assert out["offset_db"] == pytest.approx(6.02, abs=0.3)
-    assert out["sensitivity_db"] == pytest.approx(-1.25 - 6.02, abs=0.3)
+    assert out["sensitivity_db"] == -1.25  # the correction already carries the level
     cal = (await client.get("/api/v1/nodes/n1/calibrations", headers=h)).json()[-1]
     assert (cal["kind"], cal["reference_id"], cal["conditions"]) == ("derived", "n2", "bench")
 
@@ -129,3 +129,51 @@ async def test_session_result_names_the_calibration(client, app_token):
     assert meta["n1"] == {"channel0": None, "channel1": None, "spl_at_0dbfs_db": None}
     calibrated = {p["node_id"]: p["result"]["calibrated"] for p in points}
     assert calibrated == {"n1": False, "n2": True}
+
+
+async def test_from_sessions_correction_follows_the_reference_file(client, app_token):
+    # Same room and response at both mics: the correction is the reference file's own
+    # correction plus the level difference, at every frequency (sign and shape end to end).
+    h = bearer(app_token)
+    p1, p2 = await _setup(client, app_token)
+    bump = b'"Sens Factor =-1.0dB"\n20 0\n3000 0\n5000 2\n8000 0\n20000 0\n'
+    r = await client.post("/api/v1/nodes/n2/calibrations", headers=h,
+                          files={"cal_file": ("ref.txt", bump, "text/plain")})
+    assert r.status_code == 201
+    sid = await _recorded_session(client, app_token, p1, p2, 0.5)
+    r = await client.post("/api/v1/nodes/n1/calibrations/from-sessions", headers=h,
+                          json={"reference_node": "n2", "sessions": [sid]})
+    assert r.status_code == 201, r.text
+    cal = (await client.get("/api/v1/nodes/n1/calibrations", headers=h)).json()[-1]
+    f = np.array(cal["curve"]["freqs_hz"])
+    c = np.array(cal["curve"]["correction_db"]) - r.json()["offset_db"]
+    expected = -np.interp(np.log(f), np.log([20, 3000, 5000, 8000, 20000]), [0, 0, 2, 0, 0])
+    band = (f > 100) & (f < 15000)
+    assert np.all(np.abs(c[band] - expected[band]) < 0.5)
+
+
+async def test_from_sessions_rejects_mixed_sweeps_and_repeats(client, app_token):
+    h = bearer(app_token)
+    p1, p2 = await _setup(client, app_token)
+    await _file_cal(client, h)
+    sid = await _recorded_session(client, app_token, p1, p2, 0.5)
+    r = await client.post("/api/v1/sessions", headers=h, json={
+        "room_id": "living", "sweep": {"duration_s": 3.0, "repeats": 1},
+        "assignments": [{"point_id": p1, "node_id": "n1"}, {"point_id": p2, "node_id": "n2"}]})
+    other = r.json()["id"]
+    url = "/api/v1/nodes/n1/calibrations/from-sessions"
+    r = await client.post(url, headers=h, json={"reference_node": "n2", "sessions": [sid, other]})
+    assert r.status_code == 400 and "another sweep" in r.json()["error"]["message"]
+    for body in ({"reference_node": "n2", "sessions": [sid, sid]},
+                 {"reference_node": "n2", "sessions": [sid], "channel": 1.0},
+                 {"reference_node": "n2", "sessions": [sid], "conditions": 5}):
+        r = await client.post(url, headers=h, json=body)
+        assert r.status_code == 400, body
+
+
+async def test_unknown_session_is_404_before_reference_check(client, app_token):
+    h = bearer(app_token)
+    await _setup(client, app_token)
+    r = await client.post("/api/v1/nodes/n1/calibrations/from-sessions", headers=h,
+                          json={"reference_node": "n2", "sessions": ["nope"]})
+    assert r.status_code == 404

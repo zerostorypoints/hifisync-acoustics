@@ -38,6 +38,10 @@ BACKOFF_S = (1, 2, 4, 8, 16, 30)
 EXTRA_HINT = "pip install 'hifisync-acoustics[reference]'"
 
 
+class FatalError(ClientError):
+    """An answer retrying cannot fix, such as a refused token: the node exits."""
+
+
 class Recorder(Protocol):
     def check(self) -> None:
         """Raise ClientError when the device cannot record mono at 48 000 Hz."""
@@ -134,17 +138,21 @@ class ReferenceNode:
             "esphome_name": self.name, "firmware": f"hifisync-acoustics {__version__}",
             "capture": True})
         if r.status >= 400:
-            raise ClientError(f"registering {self.node_id} answered {r.status}: "
-                              f"{http_client._error_text(r.body)}")
+            kind = FatalError if r.status in (401, 403) else ClientError
+            raise kind(f"registering {self.node_id} answered {r.status}: "
+                       f"{http_client._error_text(r.body)}")
         self.out(f"registered node {self.node_id}")
 
-    def _ack(self, command_id: str, state: str, detail: str | None = None) -> None:
+    def _ack(self, command_id: str, state: str, detail: str | None = None) -> bool:
+        """Send the ack; True when the engine took it."""
         body: dict[str, Any] = {"state": state}
         if detail:
             body["detail"] = detail
         r = self._json("POST", f"{API_PREFIX}/nodes/{self.node_id}/commands/{command_id}", body)
         if r.status >= 400:
             self.out(f"ack {state} for command {command_id} answered {r.status}")
+            return False
+        return True
 
     def step(self, wait: int = POLL_WAIT_S) -> bool:
         """One poll. Returns True when it handled a command. Raises ClientError on a network
@@ -154,6 +162,7 @@ class ReferenceNode:
             return False
         if r.status == 404:
             self.out("the engine does not know this node; registering again")
+            self.sleep(BACKOFF_S[0])
             self.register()
             return False
         if r.status != 200:
@@ -174,7 +183,8 @@ class ReferenceNode:
         if not path.startswith(f"{API_PREFIX}/sessions/"):
             self._ack(cid, "failed", "bad_upload_path")
             return
-        self._ack(cid, "recording")
+        if not self._ack(cid, "recording"):
+            return  # the command closed meanwhile: nothing to record for
         self.out(f"command {cid}: recording {capture:.1f} s")
         try:
             samples = self.recorder.record(capture)
@@ -216,10 +226,13 @@ class ReferenceNode:
                     registered = True
                 self.step()
                 failures = 0
-            except ClientError as exc:
+            except FatalError:
+                raise
+            except Exception as exc:  # a network error, or a malformed command
                 delay = BACKOFF_S[min(failures, len(BACKOFF_S) - 1)]
                 failures += 1
-                self.out(f"error: {exc}; retrying in {delay} s")
+                detail = exc if isinstance(exc, ClientError) else type(exc).__name__
+                self.out(f"error: {detail}; retrying in {delay} s")
                 self.sleep(delay)
 
 

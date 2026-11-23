@@ -161,11 +161,12 @@ Coordinates and room axes follow [coordinates.md](coordinates.md): `width_m` is 
   - below 500 Hz, the full impulse response;
   - above 500 Hz, the direct sound: 0.5 ms before the peak to 5 ms after it.
 
-  Both are smoothed to 1/6 octave and blended over the octave around 500 Hz, so a reflection
-  that reaches the two capsules differently stays out. The correction is
-  `reference + reference_cal − node`, and `offset_db` is its value at 1 kHz. When the reference
-  file has a `Sens Factor`, the node's sensitivity is
-  `sens_ref − (offset_db − reference_cal at 1 kHz)`.
+  Both are smoothed to 1/6 octave and blended over the octave around 500 Hz. A reflection
+  more than about 5 ms after the direct sound stays out above 500 Hz; an earlier one must
+  reach both capsules alike. The correction is `reference + reference_cal − node`, and
+  `offset_db` is its value at 1 kHz. The correction carries the level difference too, so a
+  corrected node reading equals the calibrated reference's, and the node's `sensitivity_db` is
+  the reference's `Sens Factor` (`null` when the reference file has none).
 
   The answer is 201 `{"version", "offset_db", "sensitivity_db"}`. Errors:
   - An unusable file answers 400 with its recording error code.
@@ -263,6 +264,7 @@ reaches `recording` with its first upload or when it is armed.
 
   - `meta.calibration`: `{"channel0", "channel1", "spl_at_0dbfs_db"}`.
     - `channel0` and `channel1` are the calibration versions applied, or `null` for none.
+      Channel 1's is applied only together with channel 0's.
     - Channel 0's latest calibration corrects every `fr`, and `calibrated` is then `true`.
       When the recording has 2 channels and both channels are calibrated, each source's
       `binaural.ild_db` is corrected by `c0 − c1` at the octave centre. ITD and IACC are not

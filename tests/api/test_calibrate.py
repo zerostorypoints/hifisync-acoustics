@@ -75,7 +75,7 @@ def test_two_placements_store_a_calibration(nodes, engine, capsys, tmp_path):  #
     assert "calibration dut channel 0 version 1" in out
     offset = float(out.split("offset 1k ")[1].split()[0])
     assert offset == pytest.approx(6.02, abs=0.3)
-    assert "sensitivity -7." in out
+    assert "sensitivity -1.25 dB" in out
     assert export.read_text().startswith('"Sens Factor =')
     cals = engine.get(f"{API}/nodes/dut/calibrations", headers=nodes).json()
     assert cals[0]["conditions"] == "bench" and cals[0]["kind"] == "derived"

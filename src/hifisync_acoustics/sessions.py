@@ -158,7 +158,8 @@ def _analyse_points(store: Store, session: dict) -> None:
             sens = cal.curve.sensitivity_db if cal else None
             result.meta["calibration"] = {
                 "channel0": cal.version if cal else None,
-                "channel1": cal1.version if cal1 else None,
+                # Channel 1's calibration is applied (to the ILD) only with channel 0's.
+                "channel1": cal1.version if cal1 and cal else None,
                 "spl_at_0dbfs_db": None if sens is None else spl_at_0dbfs(sens),
             }
             if result.preflight.ok:

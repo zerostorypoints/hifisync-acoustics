@@ -142,3 +142,40 @@ def test_wav16_is_mono_pcm16():
     assert len(body) == 44 + 2 * 4
     rate, x = wavfile.read(io.BytesIO(body))
     assert rate == 48000 and x.dtype == np.int16 and list(x) == [0, 16384, -32768, 32767]
+
+
+def test_refused_token_on_register_exits(monkeypatch):
+    calls = Calls([(401, b'{"error": {"code": "unauthorized"}}')])
+    monkeypatch.setattr(http_client, "http_request", calls)
+    node = refnode.ReferenceNode("http://engine", "ref", "secret", FakeRecorder(),
+                                 out=lambda m: None, sleep=lambda s: None)
+    with pytest.raises(refnode.FatalError):
+        node.run()
+    assert len(calls.seen) == 1
+
+
+def test_closed_command_is_not_recorded(monkeypatch):
+    node, calls = _offline_node(monkeypatch, [(409, b'{"error": {"code": "command_closed"}}')])
+    node.handle({"id": "c1", "kind": "record", "capture_s": 5.0,
+                 "upload_path": f"{API}/sessions/s/recordings/ref"})
+    assert node.recorder.calls == [] and len(calls.seen) == 1
+
+
+def test_malformed_command_does_not_stop_the_node(monkeypatch):
+    class Stop(BaseException):
+        pass
+
+    answers = [(200, b"{}"), (200, b"not json"), (200, b'{"kind": "record"}')]
+    calls = Calls(answers)
+
+    def http(method, url, headers, body):
+        if not calls.answers:
+            raise Stop
+        return calls(method, url, headers, body)
+
+    monkeypatch.setattr(http_client, "http_request", http)
+    node = refnode.ReferenceNode("http://engine", "ref", "secret", FakeRecorder(),
+                                 out=lambda m: None, sleep=lambda s: None)
+    with pytest.raises(Stop):
+        node.run()  # register, then two bad polls; each is logged and the loop goes on
+    assert len(calls.seen) == 3

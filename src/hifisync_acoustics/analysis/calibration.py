@@ -111,9 +111,11 @@ def combined_response(ir: ImpulseResponse, crossover_hz: float = CROSSOVER_HZ) -
 def derive_correction(pairs: list[tuple[ImpulseResponse, ImpulseResponse]],
                       reference_cal: CalibrationCurve) -> CalibrationCurve:
     """Correction for the node from (node, reference) impulse responses of one or more
-    placements: ``node_correction`` of their combined responses, averaged in dB. With a
-    reference sensitivity, the node's is ``sens_ref - (offset - ref_cal(1 kHz))``, where
-    ``offset`` is the correction at 1 kHz."""
+    placements: ``node_correction`` of their combined responses, averaged in dB.
+
+    The correction carries the level difference too: a corrected node reading equals the
+    calibrated reference's reading of the same sound. Its sensitivity is therefore the
+    reference's ``Sens Factor``, unchanged."""
     if not pairs:
         raise ValueError("need at least one (node, reference) pair")
     curves = [node_correction(combined_response(node), combined_response(ref), reference_cal)
@@ -122,9 +124,7 @@ def derive_correction(pairs: list[tuple[ImpulseResponse, ImpulseResponse]],
                             np.mean([c.correction_db for c in curves], axis=0), None)
     if reference_cal.sensitivity_db is None:
         return mean
-    sens = reference_cal.sensitivity_db - (broadband_offset_db(mean)
-                                           - broadband_offset_db(reference_cal))
-    return CalibrationCurve(mean.freqs_hz, mean.correction_db, sens)
+    return CalibrationCurve(mean.freqs_hz, mean.correction_db, reference_cal.sensitivity_db)
 
 
 def write_minidsp_cal(curve: CalibrationCurve) -> str:

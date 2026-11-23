@@ -85,11 +85,18 @@ def _at(curve, hz):
     return float(np.interp(np.log(hz), np.log(curve.freqs_hz), curve.correction_db))
 
 
-def test_gated_correction_ignores_reflection():
-    # A -6 dB reflection 8 ms after the direct sound reaches the node only.
-    corr = derive_correction([(_ir(reflection_s=0.008), _ir())], FLAT)
+def test_gated_correction_ignores_late_reflection():
+    # A -6 dB reflection 6 ms after the direct sound reaches the node only: past the
+    # direct window, so it stays out above the crossover (ungated it would be ~1.6 dB).
+    corr = derive_correction([(_ir(reflection_s=0.006), _ir())], FLAT)
     hf = corr.freqs_hz > 1000
     assert np.all(np.abs(corr.correction_db[hf]) < 0.5)
+
+
+def test_reflection_common_to_both_cancels():
+    # A 3 ms reflection inside the window cancels when it reaches both capsules alike.
+    corr = derive_correction([(_ir(reflection_s=0.003), _ir(reflection_s=0.003))], FLAT)
+    assert np.all(np.abs(corr.correction_db) < 0.01)
 
 
 def test_combined_response_is_full_below_crossover():
@@ -108,10 +115,15 @@ def test_two_placements_cancel_position_error():
     assert np.all(np.abs(corr.correction_db[corr.freqs_hz > 100]) < 0.1)
 
 
-def test_sensitivity_transfers():
-    corr = derive_correction([(_ir(0.5), _ir())], FLAT)  # the node reads 6.02 dB lower
-    assert abs(corr.sensitivity_db - (-7.02)) < 0.1
-    assert spl_at_0dbfs(-1.0) == 95.0
+def test_corrected_node_reads_the_reference_spl():
+    # The node reads 6.02 dB lower; its correction lifts it to the reference's reading, so
+    # the same sound gives the same SPL with the reference's sensitivity.
+    corr = derive_correction([(_ir(0.5), _ir())], FLAT)
+    node_dbfs, ref_dbfs = -20.0 - 6.02, -20.0
+    node_spl = spl_at_0dbfs(corr.sensitivity_db) + node_dbfs + _at(corr, 1000)
+    ref_spl = spl_at_0dbfs(FLAT.sensitivity_db) + ref_dbfs + _at(FLAT, 1000)
+    assert node_spl == pytest.approx(ref_spl, abs=0.1)
+    assert corr.sensitivity_db == -1.0 and spl_at_0dbfs(-1.0) == 95.0
 
 
 def test_no_reference_sensitivity_gives_none():

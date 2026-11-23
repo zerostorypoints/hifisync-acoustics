@@ -90,8 +90,10 @@ results).
     same room.
   - above 500 Hz, the direct sound alone: 0.5 ms before the peak to 5 ms after it.
 - The correction is `reference + reference file − node` in dB, averaged over the placements.
-- The node's sensitivity is carried over at 1 kHz: `sens_node = sens_ref − (offset − reference
-  file at 1 kHz)`.
+- The correction carries the level difference as well as the shape: a corrected node reading
+  equals the calibrated reference's reading of the same sound. So the node's sensitivity is the
+  reference's `Sens Factor`, and the exported file holds both the correction and that factor,
+  as REW expects.
 - `Sens Factor` is the RMS dBFS reading at 94 dB SPL, where a full-scale sine reads −3.01 dBFS
   (REW help, "Cal files"). So `spl_at_0dbfs_db` in the results is `94 − sensitivity`.
 
