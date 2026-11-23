@@ -49,6 +49,13 @@ to a first measurement;
 `esphome/examples/capture-node.yaml` is a complete example for an ESP32-S3 with an IM73D122
 PDM microphone.
 
+## Calibrating a node's microphone
+
+`hifisync-acoustics node` runs a USB measurement microphone on a computer as a node.
+`hifisync-acoustics calibrate` then measures a node's microphone next to it, in two swapped
+placements, and stores the node's calibration file. `docs/calibration.md` describes the
+procedure.
+
 ## Licence
 
 Apache-2.0. See `LICENSE` and `NOTICE`.

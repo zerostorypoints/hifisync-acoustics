@@ -129,6 +129,12 @@ def _cmd_measure(args) -> int:
     return measure_main(args)
 
 
+def _cmd_calibrate(args) -> int:
+    from hifisync_acoustics.calibrate import calibrate_main
+
+    return calibrate_main(args)
+
+
 def _cmd_node(args) -> int:
     from hifisync_acoustics.refnode import node_main
 
@@ -184,6 +190,37 @@ def _parser() -> argparse.ArgumentParser:
     m.add_argument("--token-file", help="file holding the token")
     m.add_argument("--yes", action="store_true", help="do not wait for Enter")
     m.set_defaults(func=_cmd_measure)
+
+    k = sub.add_parser(
+        "calibrate", help="calibrate a node's microphone against a reference node",
+        allow_abbrev=False,
+        description="Runs one session per placement of the two microphones, then stores the "
+                    "node's calibration. The token comes from $HIFISYNC_ACOUSTICS_TOKEN or "
+                    "--token-file.")
+    k.add_argument("--url", required=True, help="engine URL, for example http://host:8765")
+    k.add_argument("--room", required=True, help="room id the calibration points belong to")
+    k.add_argument("--node", required=True, help="node to calibrate")
+    k.add_argument("--reference", required=True, help="reference node (see the node command)")
+    k.add_argument("--channel", type=int, choices=(0, 1), default=0,
+                   help="node channel to calibrate (1: a stereo node's second microphone)")
+    k.add_argument("--reference-cal", help="the reference microphone's miniDSP calibration "
+                                           "file; stored for the reference node first")
+    k.add_argument("--placements", type=int, default=2,
+                   help="placements of the pair, swapped between them (1-4, default 2)")
+    k.add_argument("--source", choices=("left", "right", "both"), default="left",
+                   help="loudspeaker that plays (default left)")
+    k.add_argument("--duration", type=float, default=6.0)
+    k.add_argument("--repeats", type=int, default=2)
+    k.add_argument("--start-window", type=float, default=10.0,
+                   help="seconds to start playback once the nodes record (0-30)")
+    k.add_argument("--play", help='player command, "{file}" is the sweep, e.g. "afplay {file}"')
+    k.add_argument("--upnp", metavar="RENDERER",
+                   help="play the sweep on a UPnP/DLNA renderer (see measure --upnp)")
+    k.add_argument("--conditions", help="stored with the calibration, e.g. temperature")
+    k.add_argument("--export", help="write the node's calibration file here")
+    k.add_argument("--token-file", help="file holding the token")
+    k.add_argument("--yes", action="store_true", help="do not wait for Enter")
+    k.set_defaults(func=_cmd_calibrate)
 
     n = sub.add_parser(
         "node", help="run a reference microphone on this computer as a measurement node",
