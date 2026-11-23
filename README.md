@@ -7,6 +7,16 @@ can consume.
 The design is described in the `zerostorypoints/domosenso` repository at
 `docs/superpowers/specs/2026-11-22-room-acoustics-design.md`.
 
+## Documentation
+
+- [docs/user-guide.md](docs/user-guide.md): how the parts fit together, where each keeps its
+  data (engine on a NAS or on a computer), and the order of the first measurements.
+- [docs/install.md](docs/install.md): the engine in Docker.
+- [docs/node-firmware.md](docs/node-firmware.md): measurement nodes.
+- [docs/calibration.md](docs/calibration.md): calibrating a node's microphone; with an AI agent,
+  [docs/playbooks/calibrate-node.md](docs/playbooks/calibrate-node.md).
+- [docs/api.md](docs/api.md): routes, tokens, the `measure` command.
+
 ## Development
 
 ```

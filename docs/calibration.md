@@ -1,5 +1,7 @@
 # Calibrating a node's microphone
 
+To run it with an AI agent, see [playbooks/calibrate-node.md](playbooks/calibrate-node.md).
+
 A node's MEMS microphone reads differently from a measurement microphone, both in level and
 in frequency response. The engine corrects a node's results with its calibration. Here the
 calibration is measured against a calibrated USB measurement microphone (the *reference*),
