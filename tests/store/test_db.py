@@ -34,10 +34,10 @@ def test_open_creates_layout(tmp_path):
             "session_points", "tokens"} <= tables
 
 
-def test_migration_from_empty_sets_user_version_4(tmp_path):
+def test_migration_from_empty_sets_user_version_5(tmp_path):
     Store.open(tmp_path)
     con = sqlite3.connect(tmp_path / "engine.sqlite3")
-    assert con.execute("PRAGMA user_version").fetchone()[0] == 4
+    assert con.execute("PRAGMA user_version").fetchone()[0] == 5
 
 
 def test_calibration_versions_increment_per_node(tmp_path):
@@ -165,7 +165,7 @@ def test_migrates_v1_database_with_data(tmp_path):
 
     s = Store.open(tmp_path)
     con = sqlite3.connect(tmp_path / "engine.sqlite3")
-    assert con.execute("PRAGMA user_version").fetchone()[0] == 4
+    assert con.execute("PRAGMA user_version").fetchone()[0] == 5
     cols = {t: {r[1] for r in con.execute(f"PRAGMA table_info({t})")}
             for t in ("session_points", "sessions", "tokens")}
     assert "failure_detail" in cols["session_points"]
@@ -199,8 +199,44 @@ def test_v4_adds_node_columns(tmp_path):
     assert {n["id"]: n["capture"] for n in s.list_nodes()} == {
         "n1": True, "n2": False, "n3": None, "n4": True}
     con = sqlite3.connect(tmp_path / "engine.sqlite3")
-    assert con.execute("PRAGMA user_version").fetchone()[0] == 4
+    assert con.execute("PRAGMA user_version").fetchone()[0] == 5
     assert "node_id" in {r[1] for r in con.execute("PRAGMA table_info(tokens)")}
     assert "last_seen_at" in {r[1] for r in con.execute("PRAGMA table_info(nodes)")}
     assert con.execute("SELECT name, role, node_id FROM tokens").fetchall() == [
         ("old", "ha", None)]
+
+
+def test_v5_keeps_old_calibrations_as_channel_0_derived(tmp_path):
+    from hifisync_acoustics.store.db import _MIGRATIONS, _migration_sql, _split_statements
+
+    con = sqlite3.connect(tmp_path / "engine.sqlite3")
+    for name in _MIGRATIONS[:4]:
+        for stmt in _split_statements(_migration_sql(name)):
+            con.execute(stmt)
+    con.execute("PRAGMA user_version = 4")
+    con.execute("INSERT INTO nodes (id, esphome_name, install_source, updated_at)"
+                " VALUES ('n1', 'n1', 'app', 't')")
+    con.execute("INSERT INTO calibrations (node_id, version, created_at, curve_json, offset_db)"
+                " VALUES ('n1', 1, 't', ?, 1.5)",
+                ('{"freqs_hz": [20, 20000], "correction_db": [0, 0], "sensitivity_db": null}',))
+    con.commit()
+    con.close()
+    s = Store.open(tmp_path)
+    c = s.latest_calibration("n1")
+    assert (c.version, c.channel, c.kind) == (1, 0, "derived")
+    assert s.latest_calibration("n1", channel=1) is None
+
+
+def test_calibrations_per_channel(tmp_path):
+    from hifisync_acoustics.analysis.calibration import CalibrationCurve
+
+    s = Store.open(tmp_path)
+    _node(s, "n1")
+    curve = CalibrationCurve(np.array([20.0, 20000.0]), np.zeros(2), None)
+    assert s.add_calibration("n1", curve, 0.0, None, None, None) == 1
+    assert s.add_calibration("n1", curve, 1.0, None, None, None, channel=1) == 2
+    assert s.add_calibration("n1", curve, 2.0, None, "umik.txt", None, kind="file") == 3
+    assert s.latest_calibration("n1").version == 3
+    assert s.latest_calibration("n1", channel=1).offset_db == 1.0
+    assert s.get_calibration("n1", 3).kind == "file"
+    assert s.get_calibration("n1", 9) is None

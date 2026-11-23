@@ -23,7 +23,7 @@ import numpy as np
 from hifisync_acoustics.analysis.calibration import CalibrationCurve
 
 _MIGRATIONS = ["schema.sql", "schema_v2.sql", "schema_v3.sql",
-               "schema_v4.sql"]  # index i migrates user_version i to i + 1
+               "schema_v4.sql", "schema_v5.sql"]  # index i migrates user_version i to i + 1
 
 
 class ManagedByHA(ValueError):
@@ -67,6 +67,8 @@ class Calibration:
     curve: CalibrationCurve
     offset_db: float
     conditions: str | None
+    channel: int = 0
+    kind: str = "derived"  # 'file': a reference microphone's own file; 'derived': computed
 
 
 def _now() -> str:
@@ -229,8 +231,10 @@ class Store:
 
     def add_calibration(self, node_id: str, curve: CalibrationCurve, offset_db: float,
                         reference_id: str | None, reference_cal_name: str | None,
-                        conditions: str | None) -> int:
-        """Store a new calibration version for the node; versions start at 1."""
+                        conditions: str | None, *, channel: int = 0,
+                        kind: str = "derived") -> int:
+        """Store a new calibration version for the node's ``channel``; versions start at 1
+        and count per node across channels."""
         curve_json = json.dumps({
             "freqs_hz": [float(v) for v in curve.freqs_hz],
             "correction_db": [float(v) for v in curve.correction_db],
@@ -242,16 +246,23 @@ class Store:
                 (node_id,)).fetchone()[0]
             con.execute(
                 "INSERT INTO calibrations (node_id, version, created_at, reference_id,"
-                " reference_cal_name, curve_json, offset_db, conditions) VALUES (?,?,?,?,?,?,?,?)",
+                " reference_cal_name, curve_json, offset_db, conditions, channel, kind)"
+                " VALUES (?,?,?,?,?,?,?,?,?,?)",
                 (node_id, version, _now(), reference_id, reference_cal_name, curve_json,
-                 float(offset_db), conditions))
+                 float(offset_db), conditions, int(channel), kind))
         return version
 
-    def latest_calibration(self, node_id: str) -> Calibration | None:
+    def latest_calibration(self, node_id: str, channel: int = 0) -> Calibration | None:
         with closing(self._connect()) as con:
             row = con.execute(
-                "SELECT * FROM calibrations WHERE node_id = ? ORDER BY version DESC LIMIT 1",
-                (node_id,)).fetchone()
+                "SELECT * FROM calibrations WHERE node_id = ? AND channel = ?"
+                " ORDER BY version DESC LIMIT 1", (node_id, channel)).fetchone()
+        return None if row is None else _calibration(row)
+
+    def get_calibration(self, node_id: str, version: int) -> Calibration | None:
+        with closing(self._connect()) as con:
+            row = con.execute("SELECT * FROM calibrations WHERE node_id = ? AND version = ?",
+                              (node_id, version)).fetchone()
         return None if row is None else _calibration(row)
 
     def list_calibrations(self, node_id: str) -> list[Calibration]:
@@ -578,7 +589,8 @@ def _calibration(row: sqlite3.Row) -> Calibration:
     return Calibration(id=row["id"], node_id=row["node_id"], version=row["version"],
                        created_at=row["created_at"], reference_id=row["reference_id"],
                        reference_cal_name=row["reference_cal_name"], curve=curve,
-                       offset_db=row["offset_db"], conditions=row["conditions"])
+                       offset_db=row["offset_db"], conditions=row["conditions"],
+                       channel=row["channel"], kind=row["kind"])
 
 
 def _split_statements(script: str) -> list[str]:
