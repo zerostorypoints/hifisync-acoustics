@@ -350,3 +350,40 @@ async def test_room_without_dimensions_measures(client, app_token):
     result = point["result"]
     assert result["fr"]["freqs_hz"] and result["decay"] and result["peaks"]
     assert result["schroeder_hz"] is None
+
+
+async def test_sweep_wav_stereo_query(client, app_token):
+    r = await client.get("/api/v1/sweep.wav?duration=2&sources=left,right",
+                         headers=bearer(app_token))
+    assert r.status_code == 200
+    rate, data = wavfile.read(io.BytesIO(r.content))
+    assert rate == 48000 and data.dtype == np.int16 and data.shape == (48000 * 7, 2)
+    assert not np.any(data[:, 0][3 * 48000 :]) and not np.any(data[:, 1][: 5 * 48000])
+    peak_dbfs = 20 * np.log10(np.max(np.abs(data.astype(float))) / 32768)
+    assert -12.05 < peak_dbfs <= -12.0
+    # The default stays mono.
+    r = await client.get("/api/v1/sweep.wav?duration=2", headers=bearer(app_token))
+    assert wavfile.read(io.BytesIO(r.content))[1].ndim == 1
+
+
+@pytest.mark.parametrize("sources", ["centre", "left,left", "left,,right", ""])
+async def test_sweep_wav_rejects_unknown_source(client, app_token, sources):
+    r = await client.get(f"/api/v1/sweep.wav?sources={sources}", headers=bearer(app_token))
+    if sources == "":
+        assert r.status_code == 200  # empty means the default
+    else:
+        assert r.status_code == 400
+
+
+async def test_session_sources_roundtrip_and_validation(client, app_token):
+    p1, p2 = await _setup(client, app_token)
+    h = bearer(app_token)
+    body = {"room_id": "living", "sweep": {"duration_s": 2.0, "sources": ["left", "right"]},
+            "assignments": [{"point_id": p1, "node_id": "n1"}]}
+    r = await client.post("/api/v1/sessions", headers=h, json=body)
+    assert r.status_code == 201, r.text
+    assert r.json()["sweep"]["sources"] == ["left", "right"]
+    for bad in (["centre"], [], "left", ["left", "left"]):
+        body["sweep"]["sources"] = bad
+        r = await client.post("/api/v1/sessions", headers=h, json=body)
+        assert r.status_code == 400, bad

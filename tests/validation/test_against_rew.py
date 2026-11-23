@@ -208,7 +208,9 @@ def test_analyse_json_keys(tmp_path, capsys):
     assert code == 0
     assert capsys.readouterr().out.strip().splitlines()[-1] == "ok"
     data = json.loads(out.read_text())
-    assert set(data) == {"fr", "decay", "peaks", "schroeder_hz", "calibrated", "preflight", "meta"}
+    assert set(data) == {"fr", "decay", "peaks", "schroeder_hz", "calibrated", "preflight", "meta",
+                         "sources"}
+    assert list(data["sources"]) == ["both"] and data["sources"]["both"]["fr"] == data["fr"]
     assert data["calibrated"] is False and data["preflight"]["ok"] is True
     assert data["meta"]["sample_rate"] == FS and data["meta"]["channels"] == 1
     assert data["schroeder_hz"] is not None and len(data["decay"]) == 8

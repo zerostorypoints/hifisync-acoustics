@@ -88,11 +88,17 @@ A point of a session fails with one of these codes in its `failure` field:
 
 No token. `{"version": "0.1.0", "api": 1}`.
 
-### `GET /sweep.wav?duration=6&repeats=1`
+### `GET /sweep.wav?duration=6&repeats=1&sources=both`
 
 The measurement sweep as 16-bit PCM WAV at 48 kHz: 1.0 s of digital silence, then the sweep
 from 20 Hz to 20 kHz, peak at most −12 dBFS, with 2 s of silence between repeats. `duration`
 is 0.5 to 60 s, `repeats` 1 to 10.
+
+`sources` is a comma-separated list of `both`, `left` and `right`: one to three distinct
+names, default `both`. With the default the file is mono. With any other value the file has
+two channels (left, right): after the 1.0 s of silence, each source in the given order plays
+`repeats` sweeps on its channel (both channels for `both`), with 2 s between consecutive
+sweeps, also across sources. An unknown or repeated name answers 400.
 
 ### Rooms and points
 
@@ -152,11 +158,13 @@ reaches `recording` with its first upload or when it is armed.
   ```json
   {"room_id": "living",
    "assignments": [{"point_id": "…", "node_id": "n1"}, {"point_id": "…", "node_id": "n2"}],
-   "sweep": {"duration_s": 6.0, "repeats": 1},
+   "sweep": {"duration_s": 6.0, "repeats": 1, "sources": ["both"]},
    "player_chain": "streamer -> amplifier -> speakers"}
   ```
 
-  `sweep` and `player_chain` are optional. Each point and each node appears once. The answer
+  `sweep` and `player_chain` are optional. `sweep.sources` takes the same names as the
+  `sources` query of `GET /sweep.wav` as a JSON list; a session stored without it is
+  `["both"]`. Each point and each node appears once. The answer
   is 201 with the session.
 - `GET /sessions/{id}` returns the session and its points without results, and:
   - `nodes`: one entry per point, `{"node_id", "command_state", "detail"}`. `command_state`
@@ -169,13 +177,14 @@ reaches `recording` with its first upload or when it is armed.
   a `created` session and moves it to `recording`. The body is optional:
   `{"start_window_s": 10}`, from 0 to 30 s, the time the user has to start playback after the
   nodes are ready. Each node records `capture_s = start_window_s + sweep_file_s + 3` seconds,
-  where `sweep_file_s = 1 + repeats × duration_s + (repeats − 1) × 2` is the length of
-  `sweep.wav`. The answer is 200 with the session, as `GET /sessions/{id}` returns it.
+  where `sweep_file_s = 1 + n × duration_s + (n − 1) × 2` and `n = repeats × len(sources)`
+  is the length of `sweep.wav`. The answer is 200 with the session, as `GET /sessions/{id}` returns it.
   - A capture over 60 s answers 400 `capture_too_long`, and no command is created.
   - A session that is not `created`, or is already armed, answers 409
     `session_not_accepting`, and no command is created.
 - `PUT /sessions/{id}/recordings/{node_id}` uploads the node's recording as the raw request
-  body (`audio/wav`; PCM 16 or 24 bit, or float 32; channel 0 of a multichannel file). The
+  body (`audio/wav`; PCM 16 or 24 bit, or float 32; channel 0 of a multichannel file, and
+  channel 1 too for a 2-channel file, see `binaural` below). The
   answer is 200:
 
   ```json
@@ -202,6 +211,79 @@ reaches `recording` with its first upload or when it is armed.
   rise over the first 25 ms. For sweeps of 6 s or longer, a system with a flat response
   reads flat within ±0.5 dB from 30 Hz to 10 kHz at 1/6-octave smoothing; shorter sweeps
   deviate more below about 40 Hz.
+
+  Sweep k of the file belongs to source `sources[k // repeats]`, and each source's
+  impulse response is the average of its own repeats. `fr`, `decay`, `peaks`,
+  `schroeder_hz` and `preflight` are those of the first source, so a `["both"]` session
+  reads as before. More fields:
+
+  - `sources`: `{name: {fr, decay, peaks, direct_ms, reflections}}`, one entry per source.
+    `fr`, `decay` and `peaks` have the form of the top-level fields. `direct_ms` is the
+    arrival of the source's direct sound after the earliest source's at this point (0 for
+    the earliest, and for a single source). `reflections` lists at most 10 peaks of the
+    energy-time curve 0.5–30 ms after the direct peak and at least 6 dB above the local
+    floor, strongest first, each `{"delay_ms", "level_db", "path_diff_m"}`. `level_db` is
+    relative to the direct sound; `path_diff_m` uses 343 m/s.
+  - `stereo`, only when both `left` and `right` were measured:
+    - `arrival_diff_ms`: left direct sound minus right, from the same recording channel.
+      Positive means the left loudspeaker arrives later.
+    - `clock_ppm` and `drift_corrected`: the player and the node run on separate clocks, so
+      a recorded block lands slightly early or late against its place in the file. When a
+      source has 2 or more repeats, the engine fits the recorded sweep period from each
+      source's own repeats (least squares, one period, one offset per source). It then
+      places and averages the repeats with that period and corrects `arrival_diff_ms`.
+      `clock_ppm` is the node's clock against the player's, positive when the node runs
+      fast, and `drift_corrected` is `true`. With one repeat per source there is nothing
+      to fit: `clock_ppm` is `null`, `drift_corrected` is `false`, and `arrival_diff_ms`
+      is uncertain by about ±ε × the time between the left and right blocks, where ε is
+      the clock error. At the defaults (6 s sweep, 2 s gap, one repeat) the blocks are
+      8 s apart, so a 50 ppm clock error moves `arrival_diff_ms` by 0.4 ms. Use
+      `repeats` ≥ 2 when the arrival difference matters.
+    - `level_diff_direct_db` and `level_diff_steady_db`: left minus right in dB, each
+      `{"third_octave": {"100": …, …, "10000": …}, "octave": {"125": …, …, "8000": …}}`.
+      The direct window is the first 5 ms after each direct peak (a half-Hann fall from the
+      peak, with a 0.5 ms half-Hann rise before it); the steady window is the whole response.
+      Third-octave bands below about 200 Hz from the direct window are not meaningful: 5 ms
+      is too short to resolve them.
+  - `binaural`, only for a 2-channel recording (a binaural head): `{source: {itd_us, ild_db,
+    iacc_e, iacc_l, iacc_a, channels}}`, one entry per source. Channel 0 is the left ear and
+    channel 1 the right ear, in the order the node records them; `channels` says so:
+    `{"0": "left ear", "1": "right ear"}`. Both channels are cut at the same samples: the
+    sweeps, the clock fit and each repeat's direct peak are found on channel 0, so the
+    delay between the ears is kept. Time zero is the earlier of the two ears' direct peaks
+    less 0.5 ms; the windows are rectangular, E 0–80 ms, L 80 ms–1 s and A 0–1 s. On a
+    window the interaural cross-correlation is `Σ l(t)·r(t+τ) / √(Σ l² · Σ r²)` for
+    |τ| ≤ 1 ms, on the broadband responses.
+    - `itd_us`: the lag of the maximum of the cross-correlation on E (refined between
+      samples by a parabola), left minus right in µs: negative when the left ear hears the
+      source first.
+    - `ild_db`: left minus right in dB on E, per octave `{"500": …, …, "8000": …}`.
+    - `iacc_e`, `iacc_l`, `iacc_a`: the maximum of the absolute cross-correlation on E, L
+      and A, from 0 to 1.
+
+    `fr`, `decay`, `peaks`, `sources` and `stereo` stay those of channel 0. To check that
+    the ears are not swapped on the node, measure with `sources: ["left", "right"]`: the
+    left loudspeaker's `itd_us` must be negative and its `ild_db` at 4000 and 8000 Hz
+    positive, the right loudspeaker's the opposite. If they are reversed, the node's channel
+    0 is the right ear; swap the microphones' L/R wiring (see
+    [Node firmware](node-firmware.md#stereo-two-microphones-on-one-bus)).
+
+  With several sources, pre-flight runs on channel 0 for each source's part of the
+  recording, after the recording's own lead-in. The first failing source fails the point
+  with the usual code, its `failure_detail` names the source and channel, for example
+  `preflight: no_signal (source right, channel 0)`, and `preflight` is that source's check.
+  A 2-channel recording is then checked the same way on channel 1, with the parts placed
+  where channel 0 found them; a failure there names channel 1, for example
+  `preflight: no_signal (source left, channel 1)` or, for `["both"]`,
+  `preflight: no_signal (source both, channel 1)`.
+  When a source is silent and the order of the sweeps found cannot tell which one it is
+  (for example a silent first source with room left after the last sweep), the point fails
+  `no_signal` with a detail saying so. A silent source is never reported as the other one
+  when the recording starts before the file's first sweep; the `measure` CLI arms the nodes
+  before it plays, so this holds there. A recording that starts late inside the start
+  window (playback already under way) can mislabel a silent source (with one repeat) or
+  leave it unnamed ("cannot tell which source is missing"). A
+  recording that ends before the last source's sweep fails `too_short`.
 - `GET /sessions/{id}/export` returns a ZIP with `session.json`, `recordings/<node>.wav` and
   `results/<point>.json`.
 
@@ -259,8 +341,10 @@ in the URL. Every request it makes on its own node sets the node's `last_seen_at
 4. **Upload.** When the capture ends, `PUT` the WAV to `upload_path` as the raw body, with
    `Content-Type: audio/wav` and `Content-Length` set (44-byte header + 2 bytes per sample
    per channel). A node may upload a 2-channel WAV. The engine stores it whole, in the export
-   too, but analyses channel 0 only: the result's `meta` reports `"channels": 2` and
-   `"channel_used": 0`, and channel 1 is not analysed.
+   too. It analyses channel 0 for the mono fields (`meta` reports `"channels": 2` and
+   `"channel_used": 0`), checks both channels in pre-flight and reports `binaural` from
+   channel 0 as the left ear and channel 1 as the right ear. A file with more than 2
+   channels is analysed on channel 0 only.
    The answer is 200 `{"point_state", "failure", "detail", "session_state"}` (see
    `PUT /sessions/{id}/recordings/{node_id}`), and the command becomes `done`. On a network
    error, a 5xx answer or 400 `incomplete_body`, send the whole upload again, a few times at
@@ -300,7 +384,7 @@ it is not stored. Once no point is pending, the session is analysed as usual, or
 ```
 hifisync-acoustics measure --url http://host:8765 --room living \
     --assign POINT_ID=node-a [--assign POINT_ID=node-b ...] \
-    [--duration 6] [--repeats 1] [--start-window 10] [--play "afplay {file}" | --upnp RENDERER] [--yes]
+    [--duration 6] [--repeats 1|2] [--sources left,right] [--start-window 10] [--play "afplay {file}" | --upnp RENDERER] [--yes]
 ```
 
 The token (role `app` or `ha`) comes from the environment variable
@@ -328,8 +412,41 @@ already exist.
    prints the file path and the seconds left in the start window.
 5. Polls until the session is `done` or `failed`, then prints one line per point: state,
    failure, T30 at 500 Hz and 1 kHz and the strongest peak below 200 Hz. The temporary file
-   is removed.
+   is removed. With `--sources`, indented lines follow (see below).
+
+`--repeats` defaults to 1, or to 2 when `--sources` is given, so the node's clock error is
+fitted; pass `--repeats 1` explicitly to keep one.
+
+`--sources` names the loudspeakers in measuring order (`both`, `left`, `right`; default
+`both`). It goes into the session's `sweep` and the `sweep.wav` URL, so `--play` and `--upnp`
+play the stereo file. Before creating the session the CLI works out the capture length and
+exits 2 with "capture over 60 s: fewer repeats or a shorter sweep" when it is over the
+limit; each source multiplies the sweeps, for example `--sources left,right --repeats 2`
+with a 6 s sweep records 1 + 4 × 6 + 3 × 2 = 31 s plus the start window and a 3 s tail.
+
+With `left` and `right` measured, each point prints, after its line:
+
+```
+  L-R arrival +0.50 ms | direct L-R 1k -0.4 dB 4k -3.0 dB
+  left reflections: +3.0 ms -6.0 dB, +7.5 ms -11.2 dB
+  right reflections: +4.1 ms -9.8 dB
+```
+
+The arrival difference is positive when the left loudspeaker arrives later; the level
+differences are left minus right, per octave, on the direct sound. With one repeat per source
+the line ends in "(no drift correction: use --repeats 2 or more)": the node's clock error can
+then move the arrival difference by about 0.4 ms at 50 ppm. The reflections are the two
+strongest per source (delay and level relative to the direct sound). For a two-channel node,
+one more line per source gives `ITD -250 us IACC_E 0.42`; the ITD is left out for `both`,
+where it is not meaningful.
 
 Exit codes: 0 when every point is `done`, 1 when a point or the session failed or a wait ran
 out, 2 for usage errors, a missing token, a connection error or an API rejection (for
 example `capture_too_long`).
+
+## CLI: `sweep`
+
+`hifisync-acoustics sweep --out FILE [--duration 6] [--repeats 1] [--sources left,right]`
+writes the same file as `GET /sweep.wav`, including its 1.0 s of leading silence (the
+lead-in that pre-flight needs, so a recording of the file can be analysed with
+`hifisync-acoustics analyse`). A bad `--sources` exits 2 for `sweep` and `analyse`.

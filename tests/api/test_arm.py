@@ -277,12 +277,14 @@ def _stereo_pcm16(left, right) -> bytes:
     return buf.getvalue()
 
 
-@pytest.mark.parametrize("signal_on", [0, 1])
-async def test_stereo_upload_is_analysed_on_channel_0(client, app_token, node_a, node_b, sid,
-                                                      signal_on):
+@pytest.mark.parametrize("signal_on", [(0, 1), (0,), (1,)])
+async def test_stereo_upload_checks_both_channels(client, app_token, node_a, node_b, sid,
+                                                  signal_on):
+    """A 2-channel upload is pre-flighted on both channels and gets binaural measures; the
+    mono fields stay those of channel 0."""
     _, mono = wavfile.read(io.BytesIO(wav_bytes()))
     silent = np.zeros_like(mono)
-    body = _stereo_pcm16(mono, silent) if signal_on == 0 else _stereo_pcm16(silent, mono)
+    body = _stereo_pcm16(*(mono if c in signal_on else silent for c in (0, 1)))
     await _arm(client, app_token, sid)
     cmd = (await _poll(client, node_a, "node-a")).json()
     await _ack(client, node_a, "node-a", cmd["id"], {"state": "recording"})
@@ -299,11 +301,16 @@ async def test_stereo_upload_is_analysed_on_channel_0(client, app_token, node_a,
     meta = point["result"]["meta"]
     assert meta["channels"] == 2 and meta["channel_used"] == 0
     assert meta["subtype"] == "PCM_16" and meta["sample_rate"] == 48000
-    if signal_on == 0:
+    if signal_on == (0, 1):
         assert point["state"] == "done", point
         assert point["result"]["fr"]["freqs_hz"]
-    else:  # the sweep only on channel 1: channel 0 is silent, so the analysis finds no sweep
+        assert set(point["result"]["binaural"]) == {"both"}
+    elif signal_on == (0,):  # the right ear is silent
+        assert point["state"] == "failed", point
+        assert point["failure_detail"] == "preflight: no_signal (source both, channel 1)"
+    else:  # channel 0 is silent, so the analysis finds no sweep there first
         assert point["result"]["preflight"]["ok"] is False, point
+        assert point["failure_detail"] == "preflight: no_signal"
 
 
 async def test_ack_failed_of_last_open_point_starts_analysis(client, app_token, node_a,

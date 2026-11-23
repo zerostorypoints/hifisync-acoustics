@@ -27,7 +27,7 @@ from typing import Any
 
 from hifisync_acoustics import upnp
 from hifisync_acoustics.analysis.sweep import SweepSpec
-from hifisync_acoustics.commands import API_PREFIX, CAPTURE_TAIL_S, capture_s
+from hifisync_acoustics.commands import API_PREFIX, CAPTURE_TAIL_S, MAX_CAPTURE_S, capture_s
 
 TOKEN_ENV = "HIFISYNC_ACOUSTICS_TOKEN"
 POLL_INTERVAL_S = 0.5
@@ -190,6 +190,56 @@ def _summary_line(point: dict[str, Any], result: dict[str, Any] | None) -> str:
     return " ".join(parts)
 
 
+def parse_sources(raw: str | None) -> tuple[str, ...]:
+    """``--sources left,right`` as a tuple; the default is ``("both",)``."""
+    if not raw:
+        return ("both",)
+    return tuple(part.strip() for part in raw.split(","))
+
+
+def _sweep_spec(args) -> SweepSpec:
+    """The sweep the command asks for, checked before anything is created."""
+    if getattr(args, "repeats", None) is None:
+        args.repeats = 2 if getattr(args, "sources", None) else 1
+    try:
+        spec = SweepSpec(duration_s=args.duration, repeats=args.repeats,
+                         sources=parse_sources(getattr(args, "sources", None)))
+    except ValueError as exc:
+        raise ClientError(f"bad --sources: {exc}") from exc
+    if capture_s(spec, args.start_window) > MAX_CAPTURE_S:
+        raise ClientError(f"capture over {MAX_CAPTURE_S:g} s: "
+                          "fewer repeats or a shorter sweep")
+    return spec
+
+
+def _signed(value: float, unit: str) -> str:
+    return f"{value:+.1f} {unit}"
+
+
+def _stereo_lines(result: dict[str, Any]) -> list[str]:
+    """The stereo and binaural summary of one point, one indented line each."""
+    lines = []
+    stereo = result.get("stereo")
+    if stereo:
+        octave = stereo["level_diff_direct_db"]["octave"]
+        levels = " ".join(f"{label} {_signed(octave[hz], 'dB')}"
+                          for hz, label in (("1000", "1k"), ("4000", "4k")) if hz in octave)
+        line = (f"  L-R arrival {stereo['arrival_diff_ms']:+.2f} ms | "
+                f"direct L-R {levels}")
+        if not stereo.get("drift_corrected"):
+            line += " (no drift correction: use --repeats 2 or more)"
+        lines.append(line)
+    for name, src in result.get("sources", {}).items():
+        top = sorted(src.get("reflections", []), key=lambda r: r["level_db"], reverse=True)[:2]
+        if top:
+            lines.append(f"  {name} reflections: " + ", ".join(
+                f"{_signed(r['delay_ms'], 'ms')} {r['level_db']:.1f} dB" for r in top))
+    for name, b in result.get("binaural", {}).items():
+        itd = f"ITD {b['itd_us']:.0f} us " if name != "both" else ""
+        lines.append(f"  {name} {itd}IACC_E {b['iacc_e']:.2f}")
+    return lines
+
+
 def _parse_play(play: str | None) -> list[str] | None:
     """The player command as an argument list, checked before anything is armed."""
     if not play:
@@ -228,6 +278,7 @@ def _parse_upnp(args) -> tuple[str, str] | None:
 
 def run_measure(args, out: Callable[[str], None] = print,
                 ask: Callable[[str], str] = input) -> int:
+    spec = _sweep_spec(args)
     engine = Engine(args.url, read_token(args.token_file))
     play = _parse_play(args.play)
     renderer = _parse_upnp(args)
@@ -238,9 +289,11 @@ def run_measure(args, out: Callable[[str], None] = print,
         except EOFError as exc:
             raise ClientError("no confirmation: input closed (use --yes)") from exc
 
-    spec = {"duration_s": args.duration, "repeats": args.repeats}
+    sweep_json = {"duration_s": args.duration, "repeats": args.repeats}
+    if spec.sources != ("both",):
+        sweep_json["sources"] = list(spec.sources)
     session = engine.json("POST", "/sessions", {
-        "room_id": args.room, "sweep": spec,
+        "room_id": args.room, "sweep": sweep_json,
         "assignments": [{"point_id": p, "node_id": n} for p, n in args.assign]})
     sid = session["id"]
     engine.json("POST", f"/sessions/{sid}/arm", {"start_window_s": args.start_window})
@@ -251,7 +304,10 @@ def run_measure(args, out: Callable[[str], None] = print,
         return EXIT_FAILED
     _, first_recording = ready
 
-    query = urllib.parse.urlencode({"duration": args.duration, "repeats": args.repeats})
+    params = {"duration": args.duration, "repeats": args.repeats}
+    if spec.sources != ("both",):
+        params["sources"] = ",".join(spec.sources)
+    query = urllib.parse.urlencode(params)
     sweep = engine.call("GET", f"/sweep.wav?{query}").body
     with tempfile.NamedTemporaryFile(suffix=".wav", prefix="sweep-", delete=False) as f:
         f.write(sweep)
@@ -285,8 +341,7 @@ def run_measure(args, out: Callable[[str], None] = print,
         else:
             out(f"Play the sweep now: {path}")
             out(f"The nodes are recording; start playback within {remaining:.1f} s.")
-        timeout = capture_s(SweepSpec(duration_s=args.duration, repeats=args.repeats),
-                            args.start_window) + RESULT_GRACE_S
+        timeout = capture_s(spec, args.start_window) + RESULT_GRACE_S
         final = _wait_finished(engine, sid, timeout)
     finally:
         Path(path).unlink(missing_ok=True)
@@ -300,6 +355,9 @@ def run_measure(args, out: Callable[[str], None] = print,
     for p in final["points"]:
         r = results.get(p["point_id"], {})
         out(_summary_line(p, r.get("result")))
+        if spec.sources != ("both",):
+            for line in _stereo_lines(r.get("result") or {}):
+                out(line)
         ok = ok and p["state"] == "done"
     if final.get("failure"):
         out(f"session failed: {final['failure']}")
