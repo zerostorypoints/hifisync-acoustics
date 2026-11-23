@@ -7,6 +7,7 @@ import pytest
 from scipy.io import wavfile
 
 from conftest import bearer, make_client, wav_bytes
+from hifisync_acoustics.analysis.sweep import LEAD_S
 from hifisync_acoustics.api.app import create_app
 
 pytestmark = pytest.mark.anyio
@@ -161,10 +162,11 @@ async def test_sweep_wav_peak_minus_12(client, app_token):
     assert r.status_code == 200 and r.headers["content-type"] == "audio/wav"
     rate, data = wavfile.read(io.BytesIO(r.content))
     assert rate == 48000 and data.dtype == np.int16
-    # 1.0 s of digital silence, then two 2 s sweeps with 2 s between them.
-    assert len(data) == int(48000 + 2 * (2.0 * 48000) + 2.0 * 48000)
-    assert not np.any(data[:48000])
-    assert np.any(data[48000 : 48000 + 4800])
+    # 3.0 s of digital silence, then two 2 s sweeps with 2 s between them.
+    lead = 3 * 48000
+    assert len(data) == int(lead + 2 * (2.0 * 48000) + 2.0 * 48000)
+    assert not np.any(data[:lead])
+    assert np.any(data[lead : lead + 4800])
     peak_dbfs = 20 * np.log10(np.max(np.abs(data.astype(float))) / 32768)
     assert -12.05 < peak_dbfs <= -12.0
     r = await client.get("/api/v1/sweep.wav?duration=abc", headers=bearer(app_token))
@@ -357,8 +359,10 @@ async def test_sweep_wav_stereo_query(client, app_token):
                          headers=bearer(app_token))
     assert r.status_code == 200
     rate, data = wavfile.read(io.BytesIO(r.content))
-    assert rate == 48000 and data.dtype == np.int16 and data.shape == (48000 * 7, 2)
-    assert not np.any(data[:, 0][3 * 48000 :]) and not np.any(data[:, 1][: 5 * 48000])
+    lead = int(LEAD_S * 48000)
+    assert rate == 48000 and data.dtype == np.int16 and data.shape == (lead + 48000 * 6, 2)
+    assert not np.any(data[:, 0][lead + 2 * 48000 :])
+    assert not np.any(data[:, 1][: lead + 4 * 48000])
     peak_dbfs = 20 * np.log10(np.max(np.abs(data.astype(float))) / 32768)
     assert -12.05 < peak_dbfs <= -12.0
     # The default stays mono.

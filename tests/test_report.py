@@ -35,7 +35,9 @@ def mono_case():
     """A default ``("both",)`` session, recorded through ``_mono_room`` with 0.6 s pre-roll."""
     rng = np.random.default_rng(20261122)
     spec = SweepSpec(duration_s=3.0, repeats=2)
-    wet = scipy.signal.fftconvolve(render_sequence(spec), _mono_room(rng))
+    # the fixture was recorded with the file's earlier 1.0 s lead; keep that layout
+    seq = np.concatenate([np.zeros(FS), generate_sweep(spec).signal])
+    wet = scipy.signal.fftconvolve(seq, _mono_room(rng))
     x = np.concatenate([np.zeros(int(0.6 * FS)), wet, np.zeros(FS)])
     x += 1e-5 * rng.standard_normal(len(x))
     return _rec(x), generate_sweep(spec)

@@ -323,8 +323,12 @@ def _run_session(engine: Engine, args, spec: SweepSpec, assignments: list[tuple[
             return None
         if renderer:
             sweep_url = f"{args.url.rstrip('/')}{API_PREFIX}/sweep.wav?{query}"
+            # the wait for the renderer comes out of the start window; keep 1 s of it for Play
+            budget = max(0.0, remaining - 1.0)
+            settle = min(upnp.SETTLE_S, budget)
             try:
-                upnp.play(*renderer, sweep_url)
+                upnp.play(*renderer, sweep_url, settle_s=settle,
+                          ready_timeout_s=min(upnp.READY_TIMEOUT_S, budget - settle))
             except upnp.UpnpError as exc:
                 out(f"warning: the renderer did not start the sweep: {exc}; "
                     f"play it yourself: {path}")

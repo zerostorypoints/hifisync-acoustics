@@ -90,13 +90,13 @@ No token. `{"version": "0.1.0", "api": 1}`.
 
 ### `GET /sweep.wav?duration=6&repeats=1&sources=both`
 
-The measurement sweep as 16-bit PCM WAV at 48 kHz: 1.0 s of digital silence, then the sweep
+The measurement sweep as 16-bit PCM WAV at 48 kHz: 3.0 s of digital silence, then the sweep
 from 20 Hz to 20 kHz, peak at most −12 dBFS, with 2 s of silence between repeats. `duration`
 is 0.5 to 60 s, `repeats` 1 to 10.
 
 `sources` is a comma-separated list of `both`, `left` and `right`: one to three distinct
 names, default `both`. With the default the file is mono. With any other value the file has
-two channels (left, right): after the 1.0 s of silence, each source in the given order plays
+two channels (left, right): after the 3.0 s of silence, each source in the given order plays
 `repeats` sweeps on its channel (both channels for `both`), with 2 s between consecutive
 sweeps, also across sources. An unknown or repeated name answers 400.
 
@@ -245,7 +245,7 @@ reaches `recording` with its first upload or when it is armed.
 
   A recording needs at least 0.25 s of noise-only lead-in before the sweep; without it the
   point fails `no_signal` in analysis. Starting the recording before playing `sweep.wav`
-  satisfies this, because the file begins with 1.0 s of silence. A recording that cannot be
+  satisfies this, because the file begins with 3.0 s of silence. A recording that cannot be
   used (`unsupported_format`, `rate_mismatch`, `too_short`) fails its point in this answer. A session that no longer accepts recordings answers 409
   `session_not_accepting`. When no point is left pending, `session_state` is `analysing` and
   the engine analyses the session in the background, one session at a time.
@@ -458,8 +458,12 @@ already exist.
    already passed, it exits 1 with "start window passed before all nodes were ready; re-run
    with a larger --start-window". With `--play`, runs the command with `{file}` replaced, as
    an argument list without a shell. With `--upnp`, sends `SetAVTransportURI` with the
-   engine's `sweep.wav` URL and then `Play` to the renderer's AVTransport service; the
-   renderer fetches the file itself. `RENDERER` is a name the renderer announces over SSDP
+   engine's `sweep.wav` URL to the renderer's AVTransport service, polls `GetTransportInfo`
+   until the renderer leaves `TRANSITIONING` / `NO_MEDIA_PRESENT` (at most 5 s; at once when
+   it gives no state), waits 0.5 s more and sends `Play`; the renderer fetches the file
+   itself. The wait comes out of the start window, leaving 1 s of it for `Play`. Some
+   amplifiers make a short burst of noise when `Play` arrives while they are still switching
+   input. `RENDERER` is a name the renderer announces over SSDP
    (its friendlyName or modelName, for example `H400`) or its device description URL. It is
    looked up before the session is created, a bad one exits 2, and `--url` must then be the
    engine's LAN address, not loopback. The renderer's volume is never changed. Without either,
@@ -501,6 +505,7 @@ example `capture_too_long`).
 ## CLI: `sweep`
 
 `hifisync-acoustics sweep --out FILE [--duration 6] [--repeats 1] [--sources left,right]`
-writes the same file as `GET /sweep.wav`, including its 1.0 s of leading silence (the
-lead-in that pre-flight needs, so a recording of the file can be analysed with
+writes the same file as `GET /sweep.wav`, including its 3.0 s of leading silence (the
+lead-in that pre-flight needs, and time for a networked player to finish fading in after
+the stream starts, so a recording of the file can be analysed with
 `hifisync-acoustics analyse`). A bad `--sources` exits 2 for `sweep` and `analyse`.

@@ -6,7 +6,7 @@ import scipy.signal
 from scipy.io import wavfile
 
 from hifisync_acoustics import commands
-from hifisync_acoustics.analysis.sweep import SweepSpec, generate_sweep
+from hifisync_acoustics.analysis.sweep import LEAD_S, SweepSpec, generate_sweep
 from hifisync_acoustics.sessions import add_recording, analyse_session, create_session
 from hifisync_acoustics.store.db import CommandClosed, SessionNotAccepting, Store
 
@@ -54,12 +54,12 @@ def _at(stamp: str, seconds: float) -> datetime:
 
 def test_capture_s_default():
     spec = SweepSpec(duration_s=6, repeats=1)
-    assert commands.sweep_file_s(spec) == 7.0
-    assert commands.capture_s(spec, 10.0) == 20.0
+    assert commands.sweep_file_s(spec) == LEAD_S + 6.0
+    assert commands.capture_s(spec, 10.0) == 10.0 + LEAD_S + 6.0 + 3.0
 
 
 def test_sweep_file_s_repeats():
-    assert commands.sweep_file_s(SweepSpec(duration_s=6, repeats=3)) == 1.0 + 18.0 + 4.0
+    assert commands.sweep_file_s(SweepSpec(duration_s=6, repeats=3)) == LEAD_S + 18.0 + 4.0
 
 
 def test_capture_too_long(store):
@@ -211,11 +211,11 @@ def test_expiry_leaving_uploads_reports_analysing(store, tmp_path):
 
 def test_sweep_file_s_counts_sources():
     spec = SweepSpec(duration_s=2.0, repeats=1, sources=("left", "right"))
-    assert commands.sweep_file_s(spec) == 7.0
+    assert commands.sweep_file_s(spec) == LEAD_S + 6.0
 
 
 def test_capture_too_long_with_sources(store):
-    # One source fits (1 + 20 + 3 s file + window), three sources do not.
+    # One source fits (lead + 20 + 3 s file + window), three sources do not.
     ok = _session(store, SweepSpec(duration_s=20, repeats=1, sources=("both",)))
     commands.arm(store, ok)
     sid = _session(store, SweepSpec(duration_s=20, repeats=1,

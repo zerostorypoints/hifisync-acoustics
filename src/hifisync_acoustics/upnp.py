@@ -1,4 +1,10 @@
-"""Play the sweep on a UPnP/DLNA media renderer (AVTransport): SetAVTransportURI, then Play.
+"""Play the sweep on a UPnP/DLNA media renderer (AVTransport): SetAVTransportURI, wait until the
+renderer has loaded it, then Play.
+
+Some amplifiers switch their input and start their DAC when they take over playback, and make a
+short burst of noise when Play arrives while they are still doing so. ``play`` therefore polls
+GetTransportInfo until the renderer leaves TRANSITIONING / NO_MEDIA_PRESENT (or a timeout passes,
+or the renderer does not answer the query), then waits ``settle_s`` before Play.
 
 Only transport control is used. The renderer's volume (RenderingControl) is never touched: the
 user sets the level on the player.
@@ -11,6 +17,7 @@ import time
 import urllib.error
 import urllib.parse
 import urllib.request
+from collections.abc import Callable
 from xml.etree import ElementTree as ET
 from xml.sax.saxutils import escape
 
@@ -18,6 +25,10 @@ AVTRANSPORT = "urn:schemas-upnp-org:service:AVTransport:"
 _DEV = "{urn:schemas-upnp-org:device-1-0}"
 _SSDP_ADDR = ("239.255.255.250", 1900)
 _TIMEOUT_S = 5.0
+SETTLE_S = 0.5  # pause between the renderer reporting ready and Play
+READY_TIMEOUT_S = 5.0  # longest wait for the renderer to load the URI
+_POLL_S = 0.25
+_NOT_READY = {"TRANSITIONING", "NO_MEDIA_PRESENT"}
 
 
 class UpnpError(Exception):
@@ -81,7 +92,7 @@ def avtransport_control(description_url: str) -> tuple[str, str]:
     raise UpnpError(f"{description_url} has no AVTransport service")
 
 
-def _soap(control_url: str, service: str, action: str, args: dict[str, str]) -> None:
+def _soap(control_url: str, service: str, action: str, args: dict[str, str]) -> bytes:
     body = "".join(f"<{k}>{escape(v)}</{k}>" for k, v in args.items())
     envelope = (
         '<?xml version="1.0" encoding="utf-8"?>'
@@ -93,7 +104,7 @@ def _soap(control_url: str, service: str, action: str, args: dict[str, str]) -> 
         "Content-Type": 'text/xml; charset="utf-8"', "SOAPACTION": f'"{service}#{action}"'})
     try:
         with urllib.request.urlopen(req, timeout=_TIMEOUT_S) as resp:
-            resp.read()
+            return resp.read()
     except urllib.error.HTTPError as exc:
         raise UpnpError(f"{action} refused: HTTP {exc.code}") from exc
     except OSError as exc:
@@ -113,8 +124,42 @@ def didl(media_url: str, title: str) -> str:
     )
 
 
-def play(control_url: str, service: str, media_url: str, title: str = "Measurement sweep") -> None:
-    """Load ``media_url`` on the renderer and start it."""
+def transport_state(control_url: str, service: str) -> str | None:
+    """CurrentTransportState from GetTransportInfo, or None when the renderer does not give one."""
+    try:
+        body = _soap(control_url, service, "GetTransportInfo", {"InstanceID": "0"})
+        root = ET.fromstring(body)
+    except (UpnpError, ET.ParseError):
+        return None
+    for el in root.iter():
+        if el.tag.rsplit("}", 1)[-1] == "CurrentTransportState" and el.text:
+            return el.text.strip()
+    return None
+
+
+def wait_ready(control_url: str, service: str, timeout_s: float = READY_TIMEOUT_S,
+               sleep: Callable[[float], None] = time.sleep,
+               now: Callable[[], float] = time.monotonic) -> str | None:
+    """Poll the transport state until it is no longer TRANSITIONING / NO_MEDIA_PRESENT, at most
+    ``timeout_s``. Returns the last state read; None when the renderer gives none (the wait then
+    stops at once: nothing to wait for)."""
+    end = now() + max(0.0, timeout_s)
+    while True:
+        state = transport_state(control_url, service)
+        if state is None or state not in _NOT_READY or now() >= end:
+            return state
+        sleep(_POLL_S)
+
+
+def play(control_url: str, service: str, media_url: str, title: str = "Measurement sweep", *,
+         settle_s: float = SETTLE_S, ready_timeout_s: float = READY_TIMEOUT_S,
+         sleep: Callable[[float], None] = time.sleep,
+         now: Callable[[], float] = time.monotonic) -> None:
+    """Load ``media_url`` on the renderer, wait until it is ready and ``settle_s`` more, then
+    start it."""
     _soap(control_url, service, "SetAVTransportURI", {
         "InstanceID": "0", "CurrentURI": media_url, "CurrentURIMetaData": didl(media_url, title)})
+    wait_ready(control_url, service, ready_timeout_s, sleep, now)
+    if settle_s > 0:
+        sleep(settle_s)
     _soap(control_url, service, "Play", {"InstanceID": "0", "Speed": "1"})

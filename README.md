@@ -36,7 +36,7 @@ To check the stereo image, add `--sources left,right` (`--repeats` then defaults
 loudspeakers play in turn, and the summary adds the left-right arrival and level difference
 and the strongest early reflections of each side (plus ITD and IACC for a two-channel node).
 
-`hifisync-acoustics sweep --out FILE` writes the sweep as a WAV file (it starts with 1.0 s of
+`hifisync-acoustics sweep --out FILE` writes the sweep as a WAV file (it starts with 3.0 s of
 silence, the lead-in pre-flight needs); `--sources` makes it a stereo file.
 
 ## Measurement nodes
