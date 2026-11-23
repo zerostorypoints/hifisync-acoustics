@@ -10,6 +10,7 @@ from scipy.io import wavfile
 from conftest import bearer, wav_bytes
 from hifisync_acoustics import client as http_client
 from hifisync_acoustics import refnode
+from hifisync_acoustics.analysis.sweep import LEAD_S
 from hifisync_acoustics.api import auth
 from hifisync_acoustics.client import ClientError
 from test_client import ROOM, engine  # noqa: F401  the engine fixture
@@ -61,7 +62,7 @@ def test_registers_records_and_uploads(engine, store, staff):  # noqa: F811
     assert engine.post(f"{API}/sessions/{sid}/arm", headers=h,
                        json={"start_window_s": 1}).status_code == 200
     assert node.step(wait=1) is True
-    assert node.recorder.calls == [pytest.approx(1 + 3 + 3)]
+    assert node.recorder.calls == [pytest.approx(LEAD_S + 3 + 3)]
     s = engine.get(f"{API}/sessions/{sid}", headers=h).json()
     assert s["state"] == "done" and s["points"][0]["state"] == "done"
     assert not any("Bearer" in m or "ref-token" in m for m in logs)

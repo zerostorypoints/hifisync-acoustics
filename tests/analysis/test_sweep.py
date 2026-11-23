@@ -2,7 +2,7 @@ import numpy as np
 import pytest
 import scipy.signal
 
-from hifisync_acoustics.analysis.sweep import SweepSpec, generate_sweep
+from hifisync_acoustics.analysis.sweep import LEAD_S, SweepSpec, generate_sweep
 
 
 def test_peak_is_capped():
@@ -92,12 +92,13 @@ def test_stereo_layout():
     assert spec.sweep_count == 2
     x = render_sequence(spec)
     fs = 48000
-    assert x.shape == (fs * 7, 2)
-    left, right = x[:, 0], x[:, 1]
-    assert not np.any(left[:fs]) and not np.any(left[3 * fs :])
-    assert np.any(left[fs : 3 * fs])
-    assert not np.any(right[: 5 * fs])
-    assert np.any(right[5 * fs : 7 * fs])
+    lead = int(LEAD_S * fs)
+    assert x.shape == (lead + fs * 6, 2)
+    left, right = x[lead:, 0], x[lead:, 1]
+    assert not np.any(x[:lead])
+    assert np.any(left[: 2 * fs]) and not np.any(left[2 * fs :])
+    assert not np.any(right[: 4 * fs])
+    assert np.any(right[4 * fs : 6 * fs])
     limit = 10 ** (-12 / 20)
     assert np.max(np.abs(left)) <= limit and np.max(np.abs(right)) <= limit
 
@@ -107,7 +108,7 @@ def test_both_sequence_is_mono_lead_plus_sweep():
 
     spec = SweepSpec(duration_s=2.0, repeats=2)
     x = render_sequence(spec)
-    expected = np.concatenate([np.zeros(48000), generate_sweep(spec).signal])
+    expected = np.concatenate([np.zeros(int(LEAD_S * 48000)), generate_sweep(spec).signal])
     assert x.ndim == 1 and np.array_equal(x, expected)
 
 
@@ -115,10 +116,13 @@ def test_repeats_per_source_in_order():
     from hifisync_acoustics.analysis.sweep import render_sequence
 
     spec = SweepSpec(duration_s=1.0, repeats=2, gap_s=1.0, sources=("right", "both"))
-    x = render_sequence(spec)
     fs = 48000
-    assert spec.sweep_count == 4 and x.shape == (fs * (1 + 4 + 3), 2)
-    # right: sweeps at 1-2 s and 3-4 s; both: 5-6 s and 7-8 s.
+    lead = int(LEAD_S * fs)
+    x = render_sequence(spec)
+    assert spec.sweep_count == 4 and x.shape == (lead + fs * (4 + 3), 2)
+    assert not np.any(x[:lead])
+    # after the lead, right: sweeps at 0-1 s and 2-3 s; both: 4-5 s and 6-7 s.
+    x = np.concatenate([np.zeros((fs, 2)), x[lead:]])  # the checks below count from a 1 s lead
     assert not np.any(x[fs : 2 * fs, 0]) and np.any(x[fs : 2 * fs, 1])
     assert not np.any(x[3 * fs : 4 * fs, 0]) and np.any(x[3 * fs : 4 * fs, 1])
     assert np.array_equal(x[5 * fs : 6 * fs, 0], x[5 * fs : 6 * fs, 1])

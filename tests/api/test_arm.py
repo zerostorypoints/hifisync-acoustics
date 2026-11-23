@@ -9,6 +9,7 @@ from scipy.io import wavfile
 
 from conftest import bearer, make_client, wav_bytes
 from hifisync_acoustics import commands
+from hifisync_acoustics.analysis.sweep import LEAD_S
 from hifisync_acoustics.api import auth
 from hifisync_acoustics.api.app import create_app
 
@@ -166,7 +167,7 @@ async def test_poll_wakes_on_arm(client, app_token, node_a, sid):
     body = r.json()
     assert set(body) == {"id", "kind", "session_id", "capture_s", "upload_path"}
     assert body["kind"] == "record" and body["session_id"] == sid
-    assert body["capture_s"] == 10.0 + 3.0 + 3.0
+    assert body["capture_s"] == 10.0 + LEAD_S + 2.0 + 3.0
     assert body["upload_path"] == f"/api/v1/sessions/{sid}/recordings/node-a"
 
 

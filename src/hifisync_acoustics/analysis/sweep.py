@@ -8,7 +8,10 @@ from dataclasses import dataclass
 import numpy as np
 
 MAX_PEAK_DBFS = -12.0
-LEAD_S = 1.0  # digital silence before the first sweep in sweep.wav
+LEAD_S = 3.0  # digital silence before the first sweep in sweep.wav
+# A networked player can fade its output in for about 2 s after a stream starts: measured on one
+# amplifier, the first sweep began 7-14 dB quieter at 20-30 Hz than the second, with a thump, and
+# reached the same level only about 2.2 s after the stream began. The lead lets that finish.
 SOURCES = ("both", "left", "right")
 
 
