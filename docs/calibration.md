@@ -112,15 +112,28 @@ miniDSP UMIK-1 it often does not:
 
 - The `Sens Factor` is the reading "with the input volume set to maximum"; REW turns it into a
   sensitivity only together with its own model of how the UMIK-1's input volume maps to gain
-  (REW help, "Cal files"; John Mulcahy on AVNirvana, "UMIK-1 sensitivity").
+  (REW help, "Cal files"; John Mulcahy on AVNirvana, "UMIK-1 sensitivity"). REW and Dirac also
+  read the microphone's gain setting from the device (miniDSP forum, "UMIK-1 meaning of sens
+  factor", 2026).
+- miniDSP's own answers: the dBFS a program reads depends on the operating system and the
+  driver's volume, and "there isn't a single standardized level" ("UMIK-1 Sens Factor.", devteam,
+  2014); a change of the analog gain must be carried into the `Sens Factor` by hand (same thread,
+  2013).
+- The datasheet gives a maximum of 133 dB SPL (1 % THD) at 0 dB analog gain. Factory units run
+  at 18 dB ("UMIK-1, standard factory gain", devteam, 2014). If that maximum sits near digital full
+  scale (an inference), a factory unit's raw full scale is near 115 dB SPL and 94 dB reads in the
+  −20s of dBFS, while the factors quoted in these threads lie between about −12 and +3 dB.
+- A user who recorded a 94 dB calibrator outside REW, on Windows with a 12 dB unit, read about
+  26 dB below the file's `Sens Factor` ("UMIK-1 Sens Factor.", 2014; computed from the peak
+  values he gives; his mixer volume is not stated).
 - Observed on one UMIK-1 whose device name is "Umik-1  Gain: 18dB" and which exposes no input
   volume control to macOS: with its factory file, REW showed a sensitivity ("dBFS @ 94 dB SPL",
   in the calibration data behind the gear button of the mic's entry in Preferences, Cal files)
   27.0 dB below the file's `Sens Factor`. With the bare factor, every absolute level was 27 dB
   low; with REW's value, music read within a few dB of a phone meter and a calibrated node agreed
-  with its microphone's listed sensitivity. Why the step is 27 dB is not documented in the
-  sources above; treat it as an observation, not a rule, and read the value REW shows for your
-  unit.
+  with its microphone's listed sensitivity. The 27 dB agrees within about 1 dB with the 2014
+  report above, but no source states the step as a rule; read the value REW shows for your unit,
+  or measure the reference against a calibrator.
 
 So for a UMIK-1, read the sensitivity REW shows for it and give it to the engine:
 
