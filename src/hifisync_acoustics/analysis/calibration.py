@@ -1,4 +1,14 @@
-"""Microphone calibration: UMIK-1 files and node correction against a reference mic."""
+"""Microphone calibration: miniDSP files and node correction against a reference mic.
+
+A miniDSP file's ``Sens Factor`` is the RMS dBFS reading at 94 dB SPL, where a full-scale sine
+reads -3.01 dBFS (REW help, "Cal files"). So SPL = 94 + level_dBFS - sensitivity.
+
+A node is calibrated from recordings of the same sweep by the node and a calibrated reference
+microphone side by side (``derive_correction``). Each response is ``combined_response``: the
+full impulse response below ``CROSSOVER_HZ``, where the two microphones hear the same room, and
+the direct sound alone above it, so a reflection that reaches the two capsules differently does
+not enter the correction.
+"""
 
 from __future__ import annotations
 
@@ -8,8 +18,14 @@ from pathlib import Path
 
 import numpy as np
 
-from hifisync_acoustics.analysis.response import FrequencyResponse
+from hifisync_acoustics.analysis.ir import ImpulseResponse
+from hifisync_acoustics.analysis.response import FrequencyResponse, frequency_response
+from hifisync_acoustics.analysis.stereo import DIRECT_PRE_S, direct_sound
 from hifisync_acoustics.wav import RecordingError
+
+CROSSOVER_HZ = 500.0
+SMOOTHING = 1 / 6
+REFERENCE_SPL_DB = 94.0
 
 _SENS = re.compile(r"Sens\s*Factor\s*=\s*([-+]?(?:\d+\.?\d*|\.\d+))\s*dB", re.IGNORECASE)
 
@@ -72,3 +88,49 @@ def node_correction(
 
 def broadband_offset_db(curve: CalibrationCurve, at_hz: float = 1000.0) -> float:
     return float(_interp_log(np.array([at_hz]), curve.freqs_hz, curve.correction_db)[0])
+
+
+def spl_at_0dbfs(sensitivity_db: float) -> float:
+    """dB SPL of a 0 dBFS RMS reading for a microphone with this ``Sens Factor``."""
+    return REFERENCE_SPL_DB - sensitivity_db
+
+
+def combined_response(ir: ImpulseResponse, crossover_hz: float = CROSSOVER_HZ) -> FrequencyResponse:
+    """1/6-octave response: the full ``ir`` below ``crossover_hz``, its direct sound
+    (``stereo.direct_sound``, 0.5 ms before the peak to 5 ms after) above, blended over one
+    octave centred on the crossover with a weight linear in log2 frequency."""
+    full = frequency_response(ir, SMOOTHING)
+    x = direct_sound(ir)
+    pre = min(int(round(DIRECT_PRE_S * ir.sample_rate)), ir.peak_index)
+    gated = frequency_response(ImpulseResponse(x, ir.sample_rate, pre), SMOOTHING)
+    w = np.clip(np.log2(full.freqs_hz / crossover_hz) + 0.5, 0.0, 1.0)
+    return FrequencyResponse(full.freqs_hz, (1 - w) * full.level_db + w * gated.level_db,
+                             SMOOTHING)
+
+
+def derive_correction(pairs: list[tuple[ImpulseResponse, ImpulseResponse]],
+                      reference_cal: CalibrationCurve) -> CalibrationCurve:
+    """Correction for the node from (node, reference) impulse responses of one or more
+    placements: ``node_correction`` of their combined responses, averaged in dB. With a
+    reference sensitivity, the node's is ``sens_ref - (offset - ref_cal(1 kHz))``, where
+    ``offset`` is the correction at 1 kHz."""
+    if not pairs:
+        raise ValueError("need at least one (node, reference) pair")
+    curves = [node_correction(combined_response(node), combined_response(ref), reference_cal)
+              for node, ref in pairs]
+    mean = CalibrationCurve(curves[0].freqs_hz,
+                            np.mean([c.correction_db for c in curves], axis=0), None)
+    if reference_cal.sensitivity_db is None:
+        return mean
+    sens = reference_cal.sensitivity_db - (broadband_offset_db(mean)
+                                           - broadband_offset_db(reference_cal))
+    return CalibrationCurve(mean.freqs_hz, mean.correction_db, sens)
+
+
+def write_minidsp_cal(curve: CalibrationCurve) -> str:
+    """The curve as a miniDSP calibration file: the deviation column is the negated
+    correction, and the header holds ``Sens Factor`` when the sensitivity is known."""
+    head = ('"hifisync-acoustics calibration"' if curve.sensitivity_db is None
+            else f'"Sens Factor ={curve.sensitivity_db:.4f}dB, hifisync-acoustics calibration"')
+    rows = [f"{f:.3f}\t{-c:.4f}" for f, c in zip(curve.freqs_hz, curve.correction_db)]
+    return "\n".join([head, *rows]) + "\n"
