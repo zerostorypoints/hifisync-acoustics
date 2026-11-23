@@ -129,6 +129,12 @@ def _cmd_measure(args) -> int:
     return measure_main(args)
 
 
+def _cmd_node(args) -> int:
+    from hifisync_acoustics.refnode import node_main
+
+    return node_main(args)
+
+
 def _parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(prog="hifisync-acoustics")
     sub = p.add_subparsers(dest="command", required=True)
@@ -178,6 +184,21 @@ def _parser() -> argparse.ArgumentParser:
     m.add_argument("--token-file", help="file holding the token")
     m.add_argument("--yes", action="store_true", help="do not wait for Enter")
     m.set_defaults(func=_cmd_measure)
+
+    n = sub.add_parser(
+        "node", help="run a reference microphone on this computer as a measurement node",
+        description="The token comes from $HIFISYNC_ACOUSTICS_TOKEN or --token-file. "
+                    "Needs the reference extra: pip install 'hifisync-acoustics[reference]'.")
+    n.add_argument("--url", help="engine URL, for example http://host:8765")
+    n.add_argument("--node-id", help="the engine's id for this node; the token is bound to it")
+    n.add_argument("--device", help="input device name (part of it) or index; default: the "
+                                    "system's default input")
+    n.add_argument("--channel", type=int, choices=(0, 1), default=0,
+                   help="input channel of the device, 0 first")
+    n.add_argument("--name", help="name reported to the engine (default: the node id)")
+    n.add_argument("--token-file", help="file holding the node token")
+    n.add_argument("--list-devices", action="store_true", help="list audio devices and exit")
+    n.set_defaults(func=_cmd_node)
 
     data_help = f"data directory (default: ${DATA_ENV})"
     v = sub.add_parser("serve", help="run the HTTP API")
