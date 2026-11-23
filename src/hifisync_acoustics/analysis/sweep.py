@@ -2,11 +2,14 @@
 
 from __future__ import annotations
 
+import dataclasses
 from dataclasses import dataclass
 
 import numpy as np
 
 MAX_PEAK_DBFS = -12.0
+LEAD_S = 1.0  # digital silence before the first sweep in sweep.wav
+SOURCES = ("both", "left", "right")
 
 
 @dataclass(frozen=True)
@@ -20,6 +23,25 @@ class SweepSpec:
     peak_dbfs: float = -12.0
     repeats: int = 1
     gap_s: float = 2.0
+    # Which loudspeakers play, in order; each plays ``repeats`` sweeps. Stored as a JSON
+    # list and converted back to a tuple here; a spec without the key means ("both",).
+    sources: tuple[str, ...] = ("both",)
+
+    def __post_init__(self) -> None:
+        sources = self.sources
+        if isinstance(sources, str):
+            raise ValueError("sources must be a list of source names")
+        sources = tuple(sources)
+        if not 1 <= len(sources) <= len(SOURCES) or len(set(sources)) != len(sources) \
+                or any(src not in SOURCES for src in sources):
+            raise ValueError(
+                f"sources must be 1 to 3 distinct names from {', '.join(SOURCES)}")
+        object.__setattr__(self, "sources", sources)
+
+    @property
+    def sweep_count(self) -> int:
+        """Sweeps in sweep.wav: ``repeats`` for each source."""
+        return self.repeats * len(self.sources)
 
 
 @dataclass(frozen=True)
@@ -78,3 +100,26 @@ def generate_sweep(spec: SweepSpec = SweepSpec()) -> Sweep:
             parts.append(gap)
         parts.append(one)
     return Sweep(spec=spec, signal=np.concatenate(parts), inverse=inverse)
+
+
+def render_sequence(spec: SweepSpec) -> np.ndarray:
+    """The sweep file as float samples, leading silence included.
+
+    Shape (n,) for ``("both",)``, byte-identical to the mono file; otherwise (n, 2) with
+    each source's sweeps on its channel (both channels for ``"both"``), in source order.
+    """
+    fs = spec.sample_rate
+    lead = np.zeros(int(LEAD_S * fs))
+    if spec.sources == ("both",):
+        return np.concatenate([lead, generate_sweep(spec).signal])
+    one = generate_sweep(dataclasses.replace(spec, repeats=1, sources=("both",))).signal
+    step = len(one) + int(round(spec.gap_s * fs))
+    total = len(lead) + spec.sweep_count * step - int(round(spec.gap_s * fs))
+    out = np.zeros((total, 2))
+    channels = {"left": (0,), "right": (1,), "both": (0, 1)}
+    for i in range(spec.sweep_count):
+        source = spec.sources[i // spec.repeats]
+        start = len(lead) + i * step
+        for ch in channels[source]:
+            out[start : start + len(one), ch] = one
+    return out

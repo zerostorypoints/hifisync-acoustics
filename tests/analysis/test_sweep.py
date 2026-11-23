@@ -70,3 +70,56 @@ def test_inverse_flat_midband():
     band = (f >= 50) & (f <= 10000)
     db = 20 * np.log10(np.abs(np.fft.rfft(ir, n))[band])
     assert np.max(np.abs(db)) < 0.5
+
+
+def test_default_sources_is_both():
+    spec = SweepSpec()
+    assert spec.sources == ("both",)
+    assert spec.sweep_count == 1
+
+
+def test_sources_validation():
+    for bad in ((), ("left", "left"), ("centre",), ("both", "left", "right", "both")):
+        with pytest.raises(ValueError, match="sources"):
+            SweepSpec(sources=bad)
+    assert SweepSpec(sources=["left", "right"]).sources == ("left", "right")
+
+
+def test_stereo_layout():
+    from hifisync_acoustics.analysis.sweep import render_sequence
+
+    spec = SweepSpec(duration_s=2.0, repeats=1, sources=("left", "right"))
+    assert spec.sweep_count == 2
+    x = render_sequence(spec)
+    fs = 48000
+    assert x.shape == (fs * 7, 2)
+    left, right = x[:, 0], x[:, 1]
+    assert not np.any(left[:fs]) and not np.any(left[3 * fs :])
+    assert np.any(left[fs : 3 * fs])
+    assert not np.any(right[: 5 * fs])
+    assert np.any(right[5 * fs : 7 * fs])
+    limit = 10 ** (-12 / 20)
+    assert np.max(np.abs(left)) <= limit and np.max(np.abs(right)) <= limit
+
+
+def test_both_sequence_is_mono_lead_plus_sweep():
+    from hifisync_acoustics.analysis.sweep import render_sequence
+
+    spec = SweepSpec(duration_s=2.0, repeats=2)
+    x = render_sequence(spec)
+    expected = np.concatenate([np.zeros(48000), generate_sweep(spec).signal])
+    assert x.ndim == 1 and np.array_equal(x, expected)
+
+
+def test_repeats_per_source_in_order():
+    from hifisync_acoustics.analysis.sweep import render_sequence
+
+    spec = SweepSpec(duration_s=1.0, repeats=2, gap_s=1.0, sources=("right", "both"))
+    x = render_sequence(spec)
+    fs = 48000
+    assert spec.sweep_count == 4 and x.shape == (fs * (1 + 4 + 3), 2)
+    # right: sweeps at 1-2 s and 3-4 s; both: 5-6 s and 7-8 s.
+    assert not np.any(x[fs : 2 * fs, 0]) and np.any(x[fs : 2 * fs, 1])
+    assert not np.any(x[3 * fs : 4 * fs, 0]) and np.any(x[3 * fs : 4 * fs, 1])
+    assert np.array_equal(x[5 * fs : 6 * fs, 0], x[5 * fs : 6 * fs, 1])
+    assert np.any(x[7 * fs : 8 * fs, 0])

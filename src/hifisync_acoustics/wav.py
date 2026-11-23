@@ -20,11 +20,23 @@ class RecordingError(ValueError):
 
 @dataclass(frozen=True)
 class Recording:
-    samples: np.ndarray  # float64, mono, -1..1
+    samples: np.ndarray  # float64, mono, -1..1: channel ``channel_used``
     sample_rate: int
     channel_used: int
     channels: int
     subtype: str
+    # Every channel, shape (n, channels), float64 -1..1, for a multichannel file; None
+    # when only ``samples`` is held.
+    all_samples: np.ndarray | None = None
+
+    def channel(self, index: int) -> np.ndarray:
+        """Samples of channel ``index``; ValueError when it is not held."""
+        if index == self.channel_used:
+            return self.samples
+        if self.all_samples is None or not 0 <= index < self.all_samples.shape[1]:
+            raise ValueError(f"channel {index} is not loaded; this recording holds "
+                             f"channel {self.channel_used} only")
+        return self.all_samples[:, index]
 
 
 def _format_info(raw: bytes) -> tuple[int, int]:
@@ -65,11 +77,12 @@ def read_wav(path: Path) -> Recording:
         )
 
     channels = 1 if data.ndim == 1 else data.shape[1]
-    mono = data if data.ndim == 1 else data[:, 0]
+    full = data.astype(np.float64) / scale
     return Recording(
-        samples=mono.astype(np.float64) / scale,
+        samples=full if full.ndim == 1 else full[:, 0].copy(),
         sample_rate=int(rate),
         channel_used=0,
         channels=channels,
         subtype=subtype,
+        all_samples=full if full.ndim == 2 else None,
     )

@@ -216,9 +216,11 @@ before you rely on the order:
 3. Tap or blow on the mic whose L/R is at GND. The channel whose level jumps is that mic's.
    Note it next to your wiring, then remove the extra sensor.
 
-The engine stores the 2-channel WAV and today analyses channel 0 only (see
-[Node protocol](api.md#node-protocol), step 4). Binaural measures (interaural time and level
-differences, IACC) are not computed yet.
+The engine stores the 2-channel WAV, analyses channel 0 for the mono fields and reports
+binaural measures (ITD, ILD per octave, IACC) with channel 0 as the left ear and channel 1 as
+the right ear (see `binaural` in [the API](api.md#sessions)). Wire the mic at the left ear to
+the slot that lands in channel 0. The API section also says how to check the order with a
+left/right measurement.
 
 ## Compile check
 
