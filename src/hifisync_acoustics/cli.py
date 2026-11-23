@@ -205,6 +205,9 @@ def _parser() -> argparse.ArgumentParser:
                    help="node channel to calibrate (1: a stereo node's second microphone)")
     k.add_argument("--reference-cal", help="the reference microphone's miniDSP calibration "
                                            "file; stored for the reference node first")
+    k.add_argument("--reference-sensitivity", type=float, metavar="DBFS",
+                   help="the reference's RMS dBFS at 94 dB SPL, replacing the file's Sens "
+                        "Factor (for a UMIK-1, the value REW shows; see docs/calibration.md)")
     k.add_argument("--placements", type=int, default=2,
                    help="placements of the pair, swapped between them (1-4, default 2)")
     k.add_argument("--source", choices=("left", "right", "both"), default="left",

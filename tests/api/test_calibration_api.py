@@ -37,6 +37,40 @@ async def test_file_calibration_stored_as_file_kind(client, app_token):
     assert cal["curve"]["correction_db"][-1] == 2.25
 
 
+async def test_file_calibration_sensitivity_override(client, app_token):
+    """A UMIK-1's Sens Factor holds at full input volume; the value REW shows replaces it."""
+    h = bearer(app_token)
+    await _setup(client, app_token)
+    r = await _file_cal(client, h, sensitivity_db="-29.07")
+    assert r.status_code == 201, r.text
+    assert r.json()["sensitivity_db"] == -29.07
+    cal = (await client.get("/api/v1/nodes/n2/calibrations", headers=h)).json()[0]
+    assert cal["curve"]["sensitivity_db"] == -29.07
+    assert cal["curve"]["correction_db"][-1] == 2.25  # the curve itself is unchanged
+    text = (await client.get("/api/v1/nodes/n2/calibrations/1/file", headers=h)).text
+    assert text.startswith('"Sens Factor =-29.07')
+
+
+@pytest.mark.parametrize("value", ["abc", "29.07", "-200", "nan"])
+async def test_sensitivity_override_refused(client, app_token, value):
+    h = bearer(app_token)
+    await _setup(client, app_token)
+    r = await _file_cal(client, h, sensitivity_db=value)
+    assert r.status_code == 400 and "sensitivity_db" in r.json()["error"]["message"]
+    assert (await client.get("/api/v1/nodes/n2/calibrations", headers=h)).json() == []
+
+
+async def test_from_sessions_takes_the_overridden_sensitivity(client, app_token):
+    h = bearer(app_token)
+    p1, p2 = await _setup(client, app_token)
+    await _file_cal(client, h, sensitivity_db="-29.07")
+    sid = await _recorded_session(client, app_token, p1, p2, 0.5)
+    r = await client.post("/api/v1/nodes/n1/calibrations/from-sessions", headers=h,
+                          json={"reference_node": "n2", "sessions": [sid]})
+    assert r.status_code == 201, r.text
+    assert r.json()["sensitivity_db"] == -29.07
+
+
 async def test_from_sessions_averages_placements(client, app_token):
     h = bearer(app_token)
     p1, p2 = await _setup(client, app_token)

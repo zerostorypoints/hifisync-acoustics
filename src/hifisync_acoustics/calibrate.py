@@ -61,12 +61,16 @@ def _multipart(fields: dict[str, str], files: dict[str, tuple[str, bytes, str]]
     return b"".join(parts), f"multipart/form-data; boundary={boundary}"
 
 
-def _upload_reference_cal(engine: Engine, node: str, path: str) -> dict[str, Any]:
+def _upload_reference_cal(engine: Engine, node: str, path: str,
+                          sensitivity: float | None = None) -> dict[str, Any]:
     try:
         data = Path(path).read_bytes()
     except OSError as exc:
         raise ClientError(f"cannot read --reference-cal: {exc.strerror}") from exc
-    body, ctype = _multipart({"channel": "0"},
+    fields = {"channel": "0"}
+    if sensitivity is not None:
+        fields["sensitivity_db"] = repr(float(sensitivity))
+    body, ctype = _multipart(fields,
                              {"cal_file": (Path(path).name, data, "text/plain")})
     headers = {**engine.headers, "Content-Type": ctype}
     r = client.http_request("POST", f"{engine.base}/nodes/{node}/calibrations", headers, body)
@@ -100,6 +104,9 @@ def run_calibrate(args, out: Callable[[str], None] = print,
                   ask: Callable[[str], str] = input) -> int:
     if args.node == args.reference:
         raise ClientError("--node and --reference must be different nodes")
+    sensitivity = getattr(args, "reference_sensitivity", None)
+    if sensitivity is not None and not args.reference_cal:
+        raise ClientError("--reference-sensitivity needs --reference-cal")
     if not 1 <= args.placements <= 4:
         raise ClientError("--placements must be 1 to 4")
     args.sources = None if args.source == "both" else args.source
@@ -109,8 +116,10 @@ def run_calibrate(args, out: Callable[[str], None] = print,
     renderer = _parse_upnp(args)
 
     if args.reference_cal:
-        up = _upload_reference_cal(engine, args.reference, args.reference_cal)
-        out(f"reference {args.reference}: calibration file stored as version {up['version']}")
+        up = _upload_reference_cal(engine, args.reference, args.reference_cal, sensitivity)
+        sens = up["sensitivity_db"]
+        out(f"reference {args.reference}: calibration file stored as version {up['version']}, "
+            + (f"sensitivity {sens:.2f} dB" if sens is not None else "sensitivity -"))
     elif not any(c["channel"] == 0 for c in _calibrations(engine, args.reference)):
         raise ClientError(f"reference node {args.reference} has no calibration: "
                           "pass --reference-cal FILE")
