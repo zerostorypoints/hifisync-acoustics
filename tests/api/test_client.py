@@ -279,8 +279,9 @@ def test_upnp_plays_the_sweep_url(setup, node, renderer, capsys):
     assert main(_args(setup, "--upnp", renderer.url)) == 0
     out = capsys.readouterr().out
     assert "Playing the sweep on the renderer: http://engine/api/v1/sweep.wav?duration=2" in out
-    actions = [a for _, a, _ in renderer.actions]
-    assert actions[0].endswith('#SetAVTransportURI"') and actions[1].endswith('#Play"')
+    actions = [a.split("#")[1].rstrip('"') for _, a, _ in renderer.actions]
+    # the renderer gives no transport state, so the CLI asks once and goes on to Play
+    assert actions == ["SetAVTransportURI", "GetTransportInfo", "Play"]
     assert "http://engine/api/v1/sweep.wav?duration=2" in renderer.actions[0][2]
 
 

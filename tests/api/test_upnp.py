@@ -26,10 +26,15 @@ def test_no_avtransport_is_an_error():
         r.close()
 
 
+def _actions(r):
+    return [a.split("#")[1].rstrip('"') for _, a, _ in r.actions]
+
+
 def test_play_sets_uri_then_plays(renderer):
     ctrl, svc = upnp.avtransport_control(renderer.url)
-    upnp.play(ctrl, svc, "http://192.0.2.10:8765/api/v1/sweep.wav?duration=6&repeats=1")
-    (p1, a1, b1), (p2, a2, b2) = renderer.actions
+    upnp.play(ctrl, svc, "http://192.0.2.10:8765/api/v1/sweep.wav?duration=6&repeats=1",
+              settle_s=0)
+    (p1, a1, b1), _, (p2, a2, b2) = renderer.actions
     assert p1 == p2 == "/ctl/avt"
     assert a1 == f'"{svc}#SetAVTransportURI"' and a2 == f'"{svc}#Play"'
     # the URL is XML-escaped inside CurrentURI and again inside the DIDL metadata
@@ -55,3 +60,50 @@ def test_never_touches_volume(renderer):
     ctrl, svc = upnp.avtransport_control(renderer.url)
     upnp.play(ctrl, svc, "http://192.0.2.10/sweep.wav")
     assert all(path != "/rc" for path, _, _ in renderer.actions)
+
+
+class Clock:
+    def __init__(self):
+        self.t = 0.0
+        self.sleeps = []
+
+    def now(self):
+        return self.t
+
+    def sleep(self, s):
+        self.sleeps.append(s)
+        self.t += s
+
+
+def test_play_waits_while_transitioning_then_settles():
+    r = FakeRenderer(states=["NO_MEDIA_PRESENT", "TRANSITIONING", "TRANSITIONING", "STOPPED"])
+    try:
+        ctrl, svc = upnp.avtransport_control(r.url)
+        clock = Clock()
+        upnp.play(ctrl, svc, "http://192.0.2.10/sweep.wav", settle_s=0.5,
+                  sleep=clock.sleep, now=clock.now)
+        assert _actions(r) == ["SetAVTransportURI"] + ["GetTransportInfo"] * 4 + ["Play"]
+        assert clock.sleeps[-1] == 0.5  # the settle pause comes right before Play
+    finally:
+        r.close()
+
+
+def test_play_stops_waiting_at_the_timeout():
+    r = FakeRenderer(states=["TRANSITIONING"])
+    try:
+        ctrl, svc = upnp.avtransport_control(r.url)
+        clock = Clock()
+        upnp.play(ctrl, svc, "http://192.0.2.10/sweep.wav", settle_s=0, ready_timeout_s=1.0,
+                  sleep=clock.sleep, now=clock.now)
+        assert _actions(r)[-1] == "Play"
+        assert clock.t <= 1.0 + upnp._POLL_S
+    finally:
+        r.close()
+
+
+def test_renderer_without_transport_info_gets_only_the_settle_pause(renderer):
+    ctrl, svc = upnp.avtransport_control(renderer.url)
+    clock = Clock()
+    upnp.play(ctrl, svc, "http://192.0.2.10/sweep.wav", sleep=clock.sleep, now=clock.now)
+    assert _actions(renderer) == ["SetAVTransportURI", "GetTransportInfo", "Play"]
+    assert clock.sleeps == [upnp.SETTLE_S]

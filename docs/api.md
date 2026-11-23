@@ -458,8 +458,12 @@ already exist.
    already passed, it exits 1 with "start window passed before all nodes were ready; re-run
    with a larger --start-window". With `--play`, runs the command with `{file}` replaced, as
    an argument list without a shell. With `--upnp`, sends `SetAVTransportURI` with the
-   engine's `sweep.wav` URL and then `Play` to the renderer's AVTransport service; the
-   renderer fetches the file itself. `RENDERER` is a name the renderer announces over SSDP
+   engine's `sweep.wav` URL to the renderer's AVTransport service, polls `GetTransportInfo`
+   until the renderer leaves `TRANSITIONING` / `NO_MEDIA_PRESENT` (at most 5 s; at once when
+   it gives no state), waits 0.5 s more and sends `Play`; the renderer fetches the file
+   itself. The wait comes out of the start window, leaving 1 s of it for `Play`. Some
+   amplifiers make a short burst of noise when `Play` arrives while they are still switching
+   input. `RENDERER` is a name the renderer announces over SSDP
    (its friendlyName or modelName, for example `H400`) or its device description URL. It is
    looked up before the session is created, a bad one exits 2, and `--url` must then be the
    engine's LAN address, not loopback. The renderer's volume is never changed. Without either,
