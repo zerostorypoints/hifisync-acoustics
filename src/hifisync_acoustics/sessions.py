@@ -18,6 +18,7 @@ import zipfile
 from dataclasses import dataclass
 from pathlib import Path
 
+from hifisync_acoustics.analysis.calibration import spl_at_0dbfs
 from hifisync_acoustics.analysis.modes import RoomDimensions
 from hifisync_acoustics.analysis.sweep import SweepSpec, generate_sweep
 from hifisync_acoustics.messages import public_message
@@ -150,8 +151,16 @@ def _analyse_points(store: Store, session: dict) -> None:
                 raise RecordingError(
                     "rate_mismatch", f"recording is {rec.sample_rate} Hz but the sweep was "
                     f"generated at {spec.sample_rate} Hz")
-            cal = store.latest_calibration(point["node_id"])
-            result = analyse_recording(rec, sweep, dims, cal.curve if cal else None)
+            cal = store.latest_calibration(point["node_id"], 0)
+            cal1 = store.latest_calibration(point["node_id"], 1) if rec.channels == 2 else None
+            result = analyse_recording(rec, sweep, dims, cal.curve if cal else None,
+                                       cal1.curve if cal1 else None)
+            sens = cal.curve.sensitivity_db if cal else None
+            result.meta["calibration"] = {
+                "channel0": cal.version if cal else None,
+                "channel1": cal1.version if cal1 else None,
+                "spl_at_0dbfs_db": None if sens is None else spl_at_0dbfs(sens),
+            }
             if result.preflight.ok:
                 store.set_point_result(session_id, point["point_id"], state="done",
                                        failure=None, result=result.to_json())

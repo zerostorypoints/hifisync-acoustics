@@ -115,3 +115,17 @@ async def test_channel_1_of_a_mono_node_is_refused(client, app_token):
     data["channel"] = "3"
     r = await client.post("/api/v1/nodes/n1/calibrations", files=files, data=data, headers=h)
     assert r.status_code == 400 and r.json()["error"]["code"] == "bad_request"
+
+
+async def test_session_result_names_the_calibration(client, app_token):
+    h = bearer(app_token)
+    p1, p2 = await _setup(client, app_token)
+    version = (await _file_cal(client, h)).json()["version"]
+    sid = await _recorded_session(client, app_token, p1, p2, 0.5)
+    points = (await client.get(f"/api/v1/sessions/{sid}/results", headers=h)).json()["points"]
+    meta = {p["node_id"]: p["result"]["meta"]["calibration"] for p in points}
+    assert meta["n2"] == {"channel0": version, "channel1": None,
+                          "spl_at_0dbfs_db": pytest.approx(95.25)}
+    assert meta["n1"] == {"channel0": None, "channel1": None, "spl_at_0dbfs_db": None}
+    calibrated = {p["node_id"]: p["result"]["calibrated"] for p in points}
+    assert calibrated == {"n1": False, "n2": True}

@@ -261,6 +261,14 @@ reaches `recording` with its first upload or when it is armed.
   `schroeder_hz` and `preflight` are those of the first source, so a `["both"]` session
   reads as before. More fields:
 
+  - `meta.calibration`: `{"channel0", "channel1", "spl_at_0dbfs_db"}`.
+    - `channel0` and `channel1` are the calibration versions applied, or `null` for none.
+    - Channel 0's latest calibration corrects every `fr`, and `calibrated` is then `true`.
+      When the recording has 2 channels and both channels are calibrated, each source's
+      `binaural.ild_db` is corrected by `c0 − c1` at the octave centre. ITD and IACC are not
+      corrected.
+    - `spl_at_0dbfs_db` is `94 − sensitivity_db` of channel 0's calibration: the SPL of an RMS
+      reading of 0 dBFS, or `null` when the sensitivity is unknown.
   - `sources`: `{name: {fr, decay, peaks, direct_ms, reflections}}`, one entry per source.
     `fr`, `decay` and `peaks` have the form of the top-level fields. `direct_ms` is the
     arrival of the source's direct sound after the earliest source's at this point (0 for
