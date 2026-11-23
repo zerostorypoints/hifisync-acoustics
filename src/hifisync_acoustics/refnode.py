@@ -166,7 +166,8 @@ class ReferenceNode:
             self.register()
             return False
         if r.status != 200:
-            raise ClientError(f"poll answered {r.status}: {http_client._error_text(r.body)}")
+            kind = FatalError if r.status in (401, 403) else ClientError
+            raise kind(f"poll answered {r.status}: {http_client._error_text(r.body)}")
         self.handle(json.loads(r.body))
         return True
 

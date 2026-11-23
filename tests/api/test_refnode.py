@@ -179,3 +179,13 @@ def test_malformed_command_does_not_stop_the_node(monkeypatch):
     with pytest.raises(Stop):
         node.run()  # register, then two bad polls; each is logged and the loop goes on
     assert len(calls.seen) == 3
+
+
+def test_revoked_token_on_poll_exits(monkeypatch):
+    calls = Calls([(200, b"{}"), (401, b'{"error": {"code": "unauthorized"}}')])
+    monkeypatch.setattr(http_client, "http_request", calls)
+    node = refnode.ReferenceNode("http://engine", "ref", "secret", FakeRecorder(),
+                                 out=lambda m: None, sleep=lambda s: None)
+    with pytest.raises(refnode.FatalError):
+        node.run()
+    assert len(calls.seen) == 2
