@@ -271,6 +271,9 @@ def _sweep_spec(duration: Any, repeats: Any, sources: Any = None) -> SweepSpec:
         raise ApiError(400, "bad_request", str(exc)) from None
 
 
+# A plausible microphone sensitivity, RMS dBFS at 94 dB SPL; a typo such as +29 is refused.
+SENSITIVITY_RANGE_DB = (-80.0, 0.0)
+
 def _parse_float(raw: str | None, name: str, default: float) -> float:
     if raw is None or raw == "":
         return default
@@ -278,6 +281,22 @@ def _parse_float(raw: str | None, name: str, default: float) -> float:
         return float(raw)
     except ValueError:
         raise ApiError(400, "bad_request", f"{name} must be a number") from None
+
+
+def _sensitivity_override(raw: str | None) -> float | None:
+    """``sensitivity_db``: the reference microphone's RMS dBFS at 94 dB SPL, replacing the
+    calibration file's ``Sens Factor``; None when not sent."""
+    if raw is None or raw == "":
+        return None
+    try:
+        value = float(raw)
+    except ValueError:
+        raise ApiError(400, "bad_request", "sensitivity_db must be a number") from None
+    if not (math.isfinite(value) and SENSITIVITY_RANGE_DB[0] <= value <= SENSITIVITY_RANGE_DB[1]):
+        raise ApiError(400, "bad_request",
+                       f"sensitivity_db must be {SENSITIVITY_RANGE_DB[0]:g} to "
+                       f"{SENSITIVITY_RANGE_DB[1]:g} dBFS")
+    return value
 
 
 def _parse_int(raw: str | None, name: str, default: int) -> int:
@@ -531,6 +550,7 @@ def create_app(store: Store, *, analyse_inline: bool = False,
                 return v if isinstance(v, str) and v != "" else None
 
             channel = _channel(text_field("channel"))
+            sensitivity = _sensitivity_override(text_field("sensitivity_db"))
             file_form = isinstance(form.get("cal_file"), UploadFile)
             fields = ("cal_file",) if file_form else ("node", "reference", "reference_cal")
             uploads = {}
@@ -556,9 +576,13 @@ def create_app(store: Store, *, analyse_inline: bool = False,
                 try:
                     if file_form:
                         curve = await run_in_threadpool(read_minidsp_cal, paths["cal_file"])
+                        if sensitivity is not None:
+                            curve = dataclasses.replace(curve, sensitivity_db=sensitivity)
                     else:
                         ref_cal = await run_in_threadpool(read_minidsp_cal,
                                                           paths["reference_cal"])
+                        if sensitivity is not None:
+                            ref_cal = dataclasses.replace(ref_cal, sensitivity_db=sensitivity)
                         curve = await run_in_threadpool(
                             _calibrate, [(paths["node"], paths["reference"])], spec, ref_cal,
                             channel)

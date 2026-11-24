@@ -143,6 +143,7 @@ Coordinates and room axes follow [coordinates.md](coordinates.md): `width_m` is 
   | --- | --- | --- |
   | `cal_file` | file | the miniDSP calibration `.txt` |
   | `channel` | text | optional, `0` (default) or `1` |
+  | `sensitivity_db` | text | optional, RMS dBFS at 94 dB SPL (−80 to 0); replaces the file's `Sens Factor` (docs/calibration.md, "The reference's sensitivity") |
   | `reference_id`, `conditions` | text | optional |
 
   A simultaneous recording of the sweep by the node and by a calibrated reference microphone:
@@ -152,6 +153,7 @@ Coordinates and room axes follow [coordinates.md](coordinates.md): `width_m` is 
   | `node` | file | the node's WAV |
   | `reference` | file | the reference microphone's WAV |
   | `reference_cal` | file | the reference microphone's miniDSP calibration `.txt` |
+  | `sensitivity_db` | text | optional, replaces `reference_cal`'s `Sens Factor`, as above |
   | `channel` | text | optional, the node's channel, `0` (default) or `1` |
   | `reference_id` | text | optional, for example a serial number |
   | `conditions` | text | optional, for example temperature or placement |

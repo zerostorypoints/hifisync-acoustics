@@ -83,6 +83,20 @@ def test_two_placements_store_a_calibration(nodes, engine, capsys, tmp_path):  #
     assert labels == ["calibration-node", "calibration-reference"]
 
 
+def test_reference_sensitivity_replaces_the_sens_factor(nodes, engine, capsys):  # noqa: F811
+    rc = main([*ARGS, "--placements", "1", "--reference-cal", str(UMIK),
+               "--reference-sensitivity", "-29.07"])
+    out = capsys.readouterr().out
+    assert rc == 0, out
+    assert "version 1, sensitivity -29.07 dB" in out  # the reference's stored file
+    assert "sensitivity -29.07 dB" in out.split("calibration dut")[1]  # the node's
+
+
+def test_reference_sensitivity_needs_reference_cal(nodes, capsys):
+    assert main([*ARGS, "--reference-sensitivity", "-29.07"]) == 2
+    assert "--reference-sensitivity needs --reference-cal" in capsys.readouterr().err
+
+
 def test_reference_without_calibration_exits_2(nodes, capsys):
     assert main(ARGS) == 2
     assert "has no calibration" in capsys.readouterr().err
